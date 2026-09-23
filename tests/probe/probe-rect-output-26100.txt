@@ -1,0 +1,67 @@
+Shell_NotifyIconGetRect capture - tests/probe/shell32_wire_probe.cpp, RunRectQueries()
+The probe's own Shell_TrayWnd answers each message with a chosen value; the
+returned rect shows how shell32 reads the answers back.
+
+shell32 tray wire probe
+windows build: 26100.1.amd64fre.ge_release.240331-1435
+
+=== Shell_NotifyIconGetRect: distinct replies per message ===
+  [recv] query 0: dwData=3 cbData=40 sender=0x18A0546 -> replying 0xDE006F
+  [recv] query 1: dwData=3 cbData=40 sender=0x18A0546 -> replying 0x1BC014D
+  returned hr=0x00000000 rect={333, 444, 444, 666} after 2 message(s)
+  query 0 payload (dwData=3, cbData=40):
+  0000  23 34 75 34 02 00 00 00 20 00 00 00 00 00 00 00  |#4u4.... .......|
+  0010  46 05 8A 01 92 10 00 00 00 00 00 00 00 00 00 00  |F...............|
+  0020  00 00 00 00 00 00 00 00                          |........|
+  query 1 payload (dwData=3, cbData=40):
+  0000  23 34 75 34 01 00 00 00 20 00 00 00 00 00 00 00  |#4u4.... .......|
+  0010  46 05 8A 01 92 10 00 00 00 00 00 00 00 00 00 00  |F...............|
+  0020  00 00 00 00 00 00 00 00                          |........|
+
+=== Shell_NotifyIconGetRect: negative coordinates ===
+  [recv] query 0: dwData=3 cbData=40 sender=0x18A0546 -> replying 0x410F8F8
+  [recv] query 1: dwData=3 cbData=40 sender=0x18A0546 -> replying 0x438F918
+  returned hr=0x00000000 rect={-1768, 1080, -3568, 2120} after 2 message(s)
+  query 0 payload (dwData=3, cbData=40):
+  0000  23 34 75 34 02 00 00 00 20 00 00 00 00 00 00 00  |#4u4.... .......|
+  0010  46 05 8A 01 92 10 00 00 00 00 00 00 00 00 00 00  |F...............|
+  0020  00 00 00 00 00 00 00 00                          |........|
+  query 1 payload (dwData=3, cbData=40):
+  0000  23 34 75 34 01 00 00 00 20 00 00 00 00 00 00 00  |#4u4.... .......|
+  0010  46 05 8A 01 92 10 00 00 00 00 00 00 00 00 00 00  |F...............|
+  0020  00 00 00 00 00 00 00 00                          |........|
+
+=== Shell_NotifyIconGetRect: tray answers 0 ===
+  [recv] query 0: dwData=3 cbData=40 sender=0x18A0546 -> replying 0x0
+  returned hr=0x80004005 rect={0, 0, 0, 0} after 1 message(s)
+  query 0 payload (dwData=3, cbData=40):
+  0000  23 34 75 34 02 00 00 00 20 00 00 00 00 00 00 00  |#4u4.... .......|
+  0010  46 05 8A 01 92 10 00 00 00 00 00 00 00 00 00 00  |F...............|
+  0020  00 00 00 00 00 00 00 00                          |........|
+
+=== Shell_NotifyIconGetRect: icon at the screen origin ===
+  [recv] query 0: dwData=3 cbData=40 sender=0x18A0546 -> replying 0x180018
+  [recv] query 1: dwData=3 cbData=40 sender=0x18A0546 -> replying 0x0
+  returned hr=0x00000000 rect={0, 0, 24, 24} after 2 message(s)
+  query 0 payload (dwData=3, cbData=40):
+  0000  23 34 75 34 02 00 00 00 20 00 00 00 00 00 00 00  |#4u4.... .......|
+  0010  46 05 8A 01 92 10 00 00 00 00 00 00 00 00 00 00  |F...............|
+  0020  00 00 00 00 00 00 00 00                          |........|
+  query 1 payload (dwData=3, cbData=40):
+  0000  23 34 75 34 01 00 00 00 20 00 00 00 00 00 00 00  |#4u4.... .......|
+  0010  46 05 8A 01 92 10 00 00 00 00 00 00 00 00 00 00  |F...............|
+  0020  00 00 00 00 00 00 00 00                          |........|
+
+=== Shell_NotifyIconGetRect: identified by GUID ===
+  [recv] query 0: dwData=3 cbData=40 sender=0x18A0546 -> replying 0x14000A
+  [recv] query 1: dwData=3 cbData=40 sender=0x18A0546 -> replying 0x28001E
+  returned hr=0x00000000 rect={30, 40, 40, 60} after 2 message(s)
+  query 0 payload (dwData=3, cbData=40):
+  0000  23 34 75 34 02 00 00 00 20 00 00 00 00 00 00 00  |#4u4.... .......|
+  0010  46 05 8A 01 92 10 00 00 44 33 22 11 66 55 88 77  |F.......D3".fU.w|
+  0020  99 AA BB CC DD EE FF 00                          |........|
+  query 1 payload (dwData=3, cbData=40):
+  0000  23 34 75 34 01 00 00 00 20 00 00 00 00 00 00 00  |#4u4.... .......|
+  0010  46 05 8A 01 92 10 00 00 44 33 22 11 66 55 88 77  |F.......D3".fU.w|
+  0020  99 AA BB CC DD EE FF 00                          |........|
+

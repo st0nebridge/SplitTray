@@ -1,5 +1,315 @@
 # Change Log
 
+## 2026-09-24 - Fixes from a code audit
+
+**Impact:** fixes: unloading while the taskbar does not answer, an icon's
+version after it is added again, the arrange window while icons come and go,
+a picture taken away in the embedded tray, and the tooltip setting.
+
+A code audit of `817033a` reported five findings. It reproduced three against
+the shipped source through this project's own harness, and traced the other
+two, in the XAML half, through the source. Each was checked against the code
+here and is now a regression test. None had been seen live; three of the fixes
+were checked live afterwards, the last items under Verified.
+
+* **Unloading could wait for ever for a taskbar that did not answer**
+  (DECISIONS 73). `HandBackToShell` asked for the hand-back with
+  `SendMessageW` before its five-second wait began, and `RemoveEmbeddedTrays`
+  did the same, so a taskbar thread that was blocked held unloading for as
+  long as it was. Taking the subclass off from the unloading thread is a
+  message that thread has to answer too. Now:
+  * The panels' removal and the hand-back are sent with a time limit
+    (`SendToTaskbarBy`, `g_taskbarWaitMs`). One not answered in time is kept
+    for the thread to handle when it gets to it, and the module stays loaded
+    for that code.
+  * Found by the new test: a sent message that times out before it is
+    handled is dropped, not handled later. The hand-back never came, and the
+    subclass went on swallowing icons into trays nothing drew. One not
+    answered in time is posted as well.
+  * The subclass takes itself off, on the taskbar's thread, in the call that
+    finishes the hand-back.
+  * Unloading waits until no call of the subclass is under way on that thread
+    (`g_subclassDepth`), and then for one more message to be answered there.
+    Explorer may run a message loop inside a message the subclass passed on,
+    a menu say, and the hand-back is then done inside that loop, with a call
+    of the subclass still below it. Unloading used to go ahead there.
+* **An icon added again kept its old version** (DECISIONS 74). An icon
+  registered again by GUID from a new window, as when its application
+  restarts, kept the version the old registration had asked for. Clicks in
+  Split Tray's trays were packed for version 4 to an application expecting
+  version 0, and a move into Explorer's tray replayed that version. An add the
+  mod answers itself now starts the icon at version 0. So does one Explorer
+  takes, while one it refuses because it has the icon leaves the version as it
+  was, as Explorer does.
+* **An open arrange window missed icons coming and going** (DECISIONS 75). It
+  was filled when it opened and again only after a move made in it. An icon of
+  the main tray asked for no refresh at all, and a refresh with the same trays
+  did nothing. Now:
+  * Each refresh compares which icons there are, the tray each is in and
+    whether it is in that tray's overflow (`ArrangeLayoutNow`) with what the
+    lists were filled with.
+  * An icon of the main tray coming or going asks for a refresh, and so does
+    the watchdog dropping an icon whose application went.
+  * Pictures and tooltips are left out, as before, since they change several
+    times a second.
+  * What is selected stays selected, by key.
+  * A refresh in the middle of a drag is left to the drag's end.
+* **A picture taken away stayed in the embedded tray** (DECISIONS 76).
+  `UpdateCellInPlace` set a picture only when there was one, so an application
+  that took its icon's picture away left the old one showing until something
+  else rebuilt the tray. A snapshot now says whether the store has a picture
+  (`CellSnapshot::hasPicture`). `CellPictureOf` tells a picture taken away
+  from one that could not be copied for this refresh; the store still has
+  that one (DECISIONS 72), and the cell keeps showing it.
+* **"Show tooltips" was not applied everywhere** (DECISIONS 77).
+  * The cells in a taskbar, and in its overflow popup, had their icon's
+    tooltip whatever the setting said. `CellSnapshotsOf` now leaves it out
+    when tooltips are off.
+  * A floating tray read the setting only when its window was made.
+    `SyncFloatingTrays` now makes or removes each tray's tooltip window on
+    every pass.
+  * The chevron's and the empty tray's own labels belong to the mod's
+    controls, not to icons, and are kept.
+* `tools/mutants_reviews.py`: two mutants follow code they described that
+  changed. The audit's mutants are in `tools/mutants_audit.py`, so that no
+  module passes 400 lines.
+
+**Verified:**
+
+* Regression 879/0. New tests:
+  * `Test_UnloadingWaitsForATaskbarThatDoesNotAnswerOnlyItsTime`, on a
+    taskbar thread of the test's own held on an event, with the real subclass
+    on its window
+  * `Test_UnloadingEndsOnlyOnceTheModsCodeHasLeftTheTaskbarsThread`, with the
+    hand-back done inside a message loop run under the subclass
+  * `Test_AnAddThatIsTakenStartsTheIconAtVersionZero`
+  * `Test_TheArrangeWindowsRowsFollowWhichIconsThereAreAndWhere`
+  * `Test_AnEmbeddedCellShowsThePictureTheStoreHas`
+  * `Test_AnEmbeddedTraysTooltipsFollowTheSetting`
+
+  All six failed before their fixes, with 11 failing checks. Nothing else
+  failed. The second was then rewritten to run the hand-back inside a real
+  message loop, since setting the count by hand let a mutant through; that
+  version was not run against the old code. The first then failed once, a
+  race in the test itself: unloading's message reached the test's taskbar
+  thread before the message that holds it. It now waits until the thread
+  is held.
+* Integration 285/0. New and changed phases, all of which failed before the
+  fixes, with 5 failing checks:
+  * [11g]: with the arrange window open, an icon for the main tray comes and
+    goes. Its row comes and goes, a row selected in tray 2's list stays
+    selected, and a change in the middle of a drag waits for the drag to end.
+  * [11h]: switching tooltips off takes tray 2's tooltip window away, and
+    switching them on puts it back.
+  * [12]: the subclass is taken off exactly once as the mod unloads.
+  * [18]: a hand-back not done in time leaves the subclass on the window. Once
+    the round is over, the hand-back takes it off, and Explorer hears
+    applications directly again.
+* Twenty new mutants, in `tools/mutants_audit.py`, and two older ones updated
+  for code that changed. Mutation score 110/110 = 100%, in two runs on the
+  committed source: the first was stopped after 60 mutants, all killed, and
+  the other 50, the audit's twenty among them, were run on their own
+  afterwards, all killed. The only change to the tests in between was the
+  wait for the test's taskbar thread to be held.
+* The mod compiles clean with the Windhawk editor's flags, XAML half included.
+  Windhawk's pull request validation reports no warnings. MSP fitness
+  85.7/100.
+* Live, in Explorer, with a test application whose icons are driven line by
+  line (`st-blink`, a copy of it under another name for the main tray, and a
+  rule sending `st-blink.exe` to tray 2 for the run):
+  * **Installed in place**, then **switched off and on four times**. Each
+    unload was over, and the mod's module gone from Explorer - not kept
+    loaded - 0.67 to 0.97 seconds after it was asked for. After every unload
+    SystemInformer's four icons, Telemachus and the test icon were with
+    Explorer; after every load they were back in tray 2.
+  * **A picture taken away**, from the test icon in tray 2, in the taskbar:
+    screenshots of its cell had 171 pixels of the icon's blue with the
+    picture, none once it was taken away, and 171 again once it was given
+    back.
+  * **The arrange window**, opened from outside with the controller's own
+    message: its main tray list went from 20 rows to 21 and 22 as two test
+    icons were added, and back to 21 and 20 as one was removed and the other's
+    application quit, each within 0.6 seconds.
+  * The first attempt at the arrange window never opened it: the script passed
+    PowerShell's `$null` for the window title, which reaches a .NET string
+    parameter as an empty string.
+
+**Not verified:**
+
+* Not live: the version of an icon added again, the tooltip setting, a
+  taskbar thread that does not answer, and the tray 2 list of the arrange
+  window. The regression and integration tests cover each.
+* Both suites leave the XAML half out: the cell's picture and tooltip are
+  tested through `CellPictureOf` and `CellSnapshotsOf`, and in a taskbar only
+  live, for the picture. The panels' removal with a time limit is not
+  tested.
+* The last message answered once no call of the subclass is under way covers
+  the instructions left of that call's return. No test can reach that window,
+  and no mutant covers it.
+
+## 2026-09-24 - Fixes from a third external review
+
+**Impact:** fixes: unloading while applications carry on, attaching before the
+tray thread runs, what Explorer's answers are taken to mean, and icon pictures
+that cannot be copied.
+
+The same reviewer went over the second review's fixes with 20 checks on
+functions extracted from the source, Windows simulated. It confirmed all four
+fixes, recommended keeping the settling design, and reproduced four remaining
+defects and one conditional one. Each was checked against the code here and
+is now a regression test. Two more changes came from testing in Explorer
+afterwards; they are the last two items.
+
+* **Unloading stopped keeping track before the icons were back**
+  (DECISIONS 68). `Wh_ModBeforeUninit` set the unloading flag, and from then
+  the subclass passed applications' messages to Explorer without updating the
+  store. The icons were handed back later, in `Wh_ModUninit`, from that stale
+  store. An application that removed an icon in between, while keeping its
+  window, had it put back in Explorer's tray. One that changed its callback
+  had the old one put back. Now:
+  * The subclass keeps track until the hand-back, unloading or not.
+  * The hand-back runs in `Wh_ModBeforeUninit` once the tray thread has
+    stopped, on the taskbar's thread, and reads the store as it is then
+    (`HandIconsBackToShell`). What arrives while it runs is handed back by
+    another round.
+  * In the same step the subclass starts passing everything on untouched, so
+    no message falls between the hand-back and the subclass letting go.
+  * A hand-back that arrives inside a round of settling is done when that round
+    ends. Unloading waits for it, and one not done in time keeps the module
+    loaded, as a tray thread that will not stop already did.
+* **A tray thread slower than `Wh_ModInit`'s wait could still attach**
+  (DECISIONS 69). The end of the wait was taken as leave to attach. A thread
+  that then failed left a subclass swallowing icons into trays nothing drew.
+  `SubclassShellTrayWindow` now refuses until the thread is running, and a
+  slow thread attaches from its own timer. One that gives up afterwards
+  leaves nothing attached, and logs that it gave up.
+* **Explorer's answers were recorded only for an icon it had refused**
+  (DECISIONS 70). An application's own add that Explorer refused was recorded
+  as there, and nothing put that right. Every add or modify passed on to
+  Explorer now has its answer recorded. A refused add is not yet taken as
+  absence: Explorer refuses to add an icon it has already, which is every
+  application's add when the mod is loaded into a running Explorer. The
+  taskbar's next round asks with the same icon as a modify (`ProbeRecordFor`).
+  An icon Explorer does not have is left to its application, which has been
+  told, as with no mod.
+* **Explorer could end up with an older icon than the store** (DECISIONS 71).
+  * What Explorer answered the version sent after an add was not looked at.
+    An icon whose version it refused was recorded as settled.
+  * A message that arrived while Explorer was taking an icon back was
+    swallowed, since Explorer did not have the icon yet, and never reached it.
+    Explorer may send messages of its own while it handles a record, and they
+    come back through the subclass. The reviewer injected this; it has not
+    been seen in Explorer.
+  * A wake-up dispatched inside a round of settling started a second round
+    inside the first, which handed Explorer the same add again.
+
+  Each icon now counts its changes. One that changed during its add, or whose
+  version was refused, is marked as behind, and the next round hands Explorer
+  the whole record as a modify with the version after it, three times at most.
+  A round never starts inside another.
+* **A picture that could not be copied** (DECISIONS 72). When the delivery's
+  copy of the mod's own picture failed, the add went with the handle the
+  application last sent, destroyed long before or by then another icon's.
+  `AddRecordFor` now leaves the picture out instead, and Explorer adds the icon
+  without one until its application sends one. The store also let go of an
+  icon's picture before copying the new one, so a failed copy left it with
+  none (`TakePictureLocked`).
+* **Found in Explorer: the hand-back asked for icons the mod never took**
+  (DECISIONS 68). When the mod is loaded into a running Explorer, Explorer's
+  own icons - its volume icon, uID 100, among them - register again, and
+  Explorer refuses both their add and the modify that asks about it. Recorded
+  as not Explorer's, they were handed back at every unload, three times each,
+  and refused each time. The hand-back now gives fresh attempts only to icons
+  whose place it changes. The refusal lines in the log now name the
+  application: the log gave only uIDs, and two applications in tray 2 both use
+  uID 2.
+* **Found in Explorer: asking about a refused add in the middle of the
+  application's message** (DECISIONS 70, 51). The first version asked with the
+  modify straight away. On a load into a running Explorer every application
+  registers again at once, Explorer refuses nearly every add in that burst,
+  and each refused add became two calls into Explorer instead of one. With
+  the question asked there, a log listener attached and the processor busy
+  with the mutation run, Telemachus's icon was lost in two loads of six.
+  Telemachus is a Tauri application, which does not retry when the tray keeps
+  it waiting.
+  Whether the question was the cause was not measured. The question is now
+  posted to the taskbar's next round, after the messages waiting then, and
+  asks without the picture, whose handle may be gone by then.
+* Two existing checks changed with the behaviour they described:
+  `Test_AddRecordDrawsWithTheModsOwnPicture` expected a record with no picture
+  of the mod's to keep the application's old handle. The end of
+  `Test_AnAddExplorerRefusesIsAskedAgainThenLeftToItsApplication` expected an
+  ordinary icon's answers not to be recorded.
+* `tools/mutants.py`: two mutants follow code they described that moved.
+
+**Verified:**
+
+* Regression 847/0. New tests:
+  * `Test_EveryIconIsHandedBackAsItIsWhenTheModUnloads`
+  * `Test_TheHandBackLeavesAloneAnIconExplorerRefusedItsApplication`
+  * `Test_AHandBackThatArrivesDuringARoundIsDoneAfterIt`
+  * `Test_ASettlingRoundIsNotStartedInsideAnother`
+  * `Test_WhatArrivesWhileExplorerTakesAnIconBackFollowsIt`
+  * `Test_AVersionExplorerDoesNotTakeIsAskedForAgain`
+  * `Test_ExplorersAnswerToAnApplicationsOwnMessageIsRecorded`
+  * `Test_ARefusedAddIsAskedAboutWithAModifyOfTheSameIcon`
+  * `Test_AnAddNeverCarriesAPictureTheModDoesNotOwn`
+  * `Test_APictureThatCannotBeCopiedLeavesTheOneBefore`
+  * `Test_TheModAttachesOnlyOnceItsTrayThreadRuns`
+
+  Each failed before its fix. For the review's findings, that was 25 failing
+  checks, the two changed checks included.
+* Integration 265/0. The stand-in for Explorer now keeps each icon's tooltip.
+  New phases and checks. All but [13c], which was added after the fixes,
+  failed before them:
+  * [11f]: an application's own add that the stand-in refuses is recorded as
+    not there, and one refused because the stand-in has the icon as there.
+    The question is asked after the application's message, not inside it.
+  * [12]: with unloading begun, an application removes one icon and changes
+    another. The removed one is not put back, and the changed one comes back
+    changed.
+  * [13c]: the test the reviewer asked for. The mod is switched off and on
+    four times while an application adds, changes and removes icons with its
+    window open, some of it after unloading has begun. After each unload the
+    stand-in held exactly the application's icons, with their latest tooltips.
+  * [16b]: a tray thread held until after `Wh_ModInit`'s wait, then made to
+    fail. The mod was not attached while it started, nor after it gave up, and
+    an icon for tray 2 went to the stand-in (`g_trayThreadHold`).
+  * [18]: a hand-back that cannot finish keeps the mod loaded, with the
+    subclass off the window.
+* Twenty new mutants, in `tools/mutants_reviews.py`. Mutation score
+  90/90 = 100%. The first run on the final code ran out of disk on C: and
+  was run again with its temporary files on E:.
+* The mod compiles clean with the Windhawk editor's flags, XAML half included.
+  Windhawk's pull request validation reports no warnings. MSP fitness 85.7/100.
+* Live, in Explorer, over three runs:
+  * **After a restart:** the tray thread was running before the mod attached;
+    the taskbar did not exist yet, and the timer attached. Moving Telemachus
+    to tray 1 and back through the arrange window: Explorer took the add (the
+    icon was then on the primary display) and the mod had it again after.
+  * **The reviewer's test, live.** A test application kept three icons
+    changing - one updated every 15 ms, one added and removed, one removed
+    the moment the mod began to unload - with its window open, while the mod
+    was switched off and on around it. In six unloads over two runs, Explorer
+    held the constantly updated icon each time. It held the added-and-removed
+    one exactly when that was last added, and never the one removed while
+    unloading.
+  * **Tray 2's other icons** (SystemInformer's four, Telemachus, the Claude
+    usage monitor), asked for after each step of the last run, on the final
+    build, with nothing else loading the machine and no log listener. The mod
+    was installed in place and then switched off and on four times. After
+    every load all six were in tray 2, and after every unload all six were
+    back in Explorer.
+
+**Not verified:**
+
+* A refused version and Explorer re-entering the subclass have not been seen
+  live. A refused add has, but only for Explorer's own icons.
+* Whether asking about refused adds inside the burst is what cost Telemachus
+  its icon, or the log listener and the load alone. The last run had neither,
+  and lost nothing in five loads.
+* Both suites leave the XAML half out.
+
 ## 2026-09-23 - Fixes from a second external review
 
 **Impact:** fixes: moving icons into and out of Explorer's tray, icon handles

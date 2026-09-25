@@ -24,6 +24,7 @@
 #include <shellapi.h>
 
 #include <cstdio>
+#include <map>
 #include <set>
 #include <string>
 #include <utility>
@@ -104,6 +105,9 @@ HWND g_iconOwnerWnd = nullptr;
 // The icons the stand-in shell holds, by owner and uID, so it can answer
 // Shell_NotifyIconGetRect the way Explorer does: for its own icons only.
 std::set<std::pair<HWND, UINT>> g_shellHeld;
+
+// The tooltip of each icon it holds, as its adds and modifies left it.
+std::map<std::pair<HWND, UINT>, std::wstring> g_shellTips;
 
 // Where the stand-in shell says its icons are.
 constexpr RECT kShellIconRect = {1500, 1040, 1524, 1080};
@@ -189,7 +193,12 @@ LRESULT CALLBACK FakeShellProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
                     answer = FALSE;
                 } else if (n.message == NIM_DELETE) {
                     g_shellHeld.erase(id);
+                    g_shellTips.erase(id);
                 }
+            }
+            if (answer && (n.flags & NIF_TIP) &&
+                (n.message == NIM_ADD || n.message == NIM_MODIFY)) {
+                g_shellTips[id] = n.tip;
             }
             switch (n.message) {
                 case NIM_ADD:
@@ -290,6 +299,19 @@ int IndexInTray(int number, UINT uID) {
         }
     }
     return -1;
+}
+
+// Whether the mod has recorded the icon with this uID as Explorer's.
+bool RecordedAsShells(UINT uID) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    for (auto* list : {&g_icons, &g_primaryOnly}) {
+        for (const auto& icon : *list) {
+            if (icon.ownerWnd == g_iconOwnerWnd && icon.uID == uID) {
+                return icon.forwardedToShell;
+            }
+        }
+    }
+    return false;
 }
 
 HWND FloatingWindowOf(int number) {
@@ -1081,15 +1103,178 @@ int RunTests() {
         Pump();
     }
 
+    // ---- Explorer's answer to an application's own add -------------------
+    // Recorded only for an icon Explorer had refused to take back from the
+    // mod: an application's own add that Explorer refused was recorded as
+    // there, and an add Explorer refused because it had the icon already -
+    // every application's, when the mod is loaded into a running Explorer -
+    // could not be told apart from one it would not take (DECISIONS 70).
+    printf("\n[11f] what Explorer answers an application's own add is recorded\n");
+    {
+        constexpr UINT kOwnAdd = 111;
+        const std::wstring key = ThisExeName() + L"#" + std::to_wstring(kOwnAdd);
+        // Remembered before it exists, so it goes to the main tray.
+        MoveIconToTray(key, Destination::Primary);
+
+        // Explorer is asked whether it has the icon on the taskbar's next
+        // round, after the application's message (DECISIONS 51): a modify,
+        // with nothing else of the stand-in's changed.
+        g_shellRefusesAdds = true;
+        g_shell.Reset();
+        CHECK(SendTrayNotification(NIM_ADD, kOwnAdd, L"refused") == FALSE);
+        CHECK_EQ(g_shell.modifies, 0);
+        Pump();
+        CHECK_EQ(g_shell.modifies, 1);
+        CHECK(!RecordedAsShells(kOwnAdd));
+        // Its application tries again, and Explorer takes it.
+        g_shellRefusesAdds = false;
+        CHECK(SendTrayNotification(NIM_ADD, kOwnAdd, L"taken") == TRUE);
+        Pump();
+        CHECK(RecordedAsShells(kOwnAdd));
+        // Refused because Explorer has it: still Explorer's.
+        CHECK(SendTrayNotification(NIM_ADD, kOwnAdd, L"again") == FALSE);
+        Pump();
+        CHECK(RecordedAsShells(kOwnAdd));
+        CHECK(g_shellHeld.count({g_iconOwnerWnd, kOwnAdd}) == 1);
+        printf("      a refusal recorded as not there, and one for an icon Explorer "
+               "has as there\n");
+
+        SendTrayNotification(NIM_DELETE, kOwnAdd, nullptr);
+        Pump();
+    }
+
+    // ---- the arrange window follows the icons --------------------------
+    // It was filled when it opened and again only after a move made in it: an
+    // application started or closed meanwhile left rows missing or stale. It
+    // is filled again when which icons there are, or where, changes - keeping
+    // what is selected, and not in the middle of a drag (DECISIONS 75).
+    printf("\n[11g] an open arrange window follows icons as they come and go\n");
+    {
+        HWND arrange = FindWindowW(kArrangeClassName, nullptr);  // left open in [11b]
+        CHECK(arrange != nullptr);
+        HWND mainList = GetDlgItem(arrange, kArrangeListIdBase);
+        HWND secondList = GetDlgItem(arrange, kArrangeListIdBase + 1);
+        CHECK(mainList != nullptr && secondList != nullptr);
+        auto rows = [](HWND list) {
+            return static_cast<int>(SendMessageW(list, LVM_GETITEMCOUNT, 0, 0));
+        };
+        // The main tray's list holds the icons the main tray has - once the
+        // mod's thread has caught up with [11f]'s last removal.
+        CHECK(PumpUntil(
+            [&] { return rows(mainList) == static_cast<int>(TrackedPrimaryCount()); }));
+        const int mainRows = rows(mainList);
+        CHECK(rows(secondList) > 0);
+
+        // A row selected in tray 2's list.
+        LVITEMW select = {};
+        select.stateMask = LVIS_SELECTED;
+        select.state = LVIS_SELECTED;
+        SendMessageW(secondList, LVM_SETITEMSTATE, 0, reinterpret_cast<LPARAM>(&select));
+        wchar_t selected[128] = {};
+        ListView_GetItemText(secondList, 0, 0, selected, ARRAYSIZE(selected));
+
+        // An icon for the main tray comes and goes.
+        constexpr UINT kComesAndGoes = 112;
+        MoveIconToTray(ThisExeName() + L"#" + std::to_wstring(kComesAndGoes),
+                       Destination::Primary);
+        CHECK(SendTrayNotification(NIM_ADD, kComesAndGoes, L"comes and goes") == TRUE);
+        CHECK(PumpUntil([&] { return rows(mainList) == mainRows + 1; }));
+        CHECK(SendTrayNotification(NIM_DELETE, kComesAndGoes, nullptr) == TRUE);
+        CHECK(PumpUntil([&] { return rows(mainList) == mainRows; }));
+        const int still = ListView_GetNextItem(secondList, -1, LVNI_SELECTED);
+        wchar_t now[128] = {};
+        if (still >= 0) {
+            ListView_GetItemText(secondList, still, 0, now, ARRAYSIZE(now));
+        }
+        CHECK(still >= 0 && wcscmp(now, selected) == 0);
+
+        // In the middle of a drag the lists wait for it to end.
+        NMLISTVIEW begin = {};
+        begin.hdr.hwndFrom = secondList;
+        begin.hdr.idFrom = kArrangeListIdBase + 1;
+        begin.hdr.code = LVN_BEGINDRAG;
+        begin.iItem = 0;
+        SendMessageW(arrange, WM_NOTIFY, begin.hdr.idFrom, reinterpret_cast<LPARAM>(&begin));
+        CHECK(SendTrayNotification(NIM_ADD, kComesAndGoes, L"during a drag") == TRUE);
+        Pump();
+        Sleep(300);
+        Pump();
+        CHECK_EQ(rows(mainList), mainRows);
+        SendMessageW(arrange, WM_CANCELMODE, 0, 0);
+        CHECK(PumpUntil([&] { return rows(mainList) == mainRows + 1; }));
+        SendTrayNotification(NIM_DELETE, kComesAndGoes, nullptr);
+        CHECK(PumpUntil([&] { return rows(mainList) == mainRows; }));
+        printf("      rows followed an icon in and out, the selection stayed, and a "
+               "drag was waited for\n");
+    }
+
+    // ---- tooltips follow the setting in trays already open ---------------
+    // A floating tray read the setting only when its window was made, so
+    // switching tooltips off or on did nothing to one already there
+    // (DECISIONS 77).
+    printf("\n[11h] turning tooltips off and on reaches the trays already open\n");
+    {
+        auto tooltipOf = [](HWND owner) {
+            struct Search {
+                HWND owner;
+                HWND found;
+            } search = {owner, nullptr};
+            EnumWindows(
+                [](HWND wnd, LPARAM param) -> BOOL {
+                    auto* s = reinterpret_cast<Search*>(param);
+                    WCHAR className[64] = {};
+                    GetClassNameW(wnd, className, ARRAYSIZE(className));
+                    if (_wcsicmp(className, TOOLTIPS_CLASSW) == 0 &&
+                        GetWindow(wnd, GW_OWNER) == s->owner) {
+                        s->found = wnd;
+                        return FALSE;
+                    }
+                    return TRUE;
+                },
+                reinterpret_cast<LPARAM>(&search));
+            return search.found;
+        };
+        CHECK(tooltipOf(FloatingWindowOf(2)) != nullptr);
+        SetSetting(L"showTooltips", 0);
+        Wh_ModSettingsChanged();
+        CHECK(PumpUntil([&] { return tooltipOf(FloatingWindowOf(2)) == nullptr; }));
+        SetSetting(L"showTooltips", 1);
+        Wh_ModSettingsChanged();
+        CHECK(PumpUntil([&] { return tooltipOf(FloatingWindowOf(2)) != nullptr; }));
+        printf("      tray 2's tooltip went with the setting and came back with it\n");
+    }
+
     // ---- unload restores swallowed icons ---------------------------
-    printf("\n[12] unloading returns swallowed icons to the shell\n");
+    // Applications carry on while the mod unloads. Once unloading had begun,
+    // the subclass passed their messages to Explorer without keeping track,
+    // and Explorer, which did not have the icons, refused them: an icon
+    // removed then was put back by the hand-back, and one changed then was
+    // put back as it had been (DECISIONS 68).
+    printf("\n[12] unloading returns swallowed icons to the shell, as they are then\n");
+    constexpr UINT kGoing = 109;     // removed by its application meanwhile
+    constexpr UINT kChanging = 110;  // changed by it meanwhile
+    CHECK(SendTrayNotification(NIM_ADD, kGoing, L"going") == TRUE);
+    CHECK(SendTrayNotification(NIM_ADD, kChanging, L"before") == TRUE);
+    Pump();
     const int swallowed = static_cast<int>(MirroredCount());
     printf("      %d icon(s) currently only in the secondary tray\n", swallowed);
     g_shell.Reset();
+    // Where Wh_ModBeforeUninit starts; stopping the mod's thread takes a while.
+    g_unloading.store(true);
+    CHECK(SendTrayNotification(NIM_DELETE, kGoing, nullptr) == TRUE);
+    CHECK(SendPartialModify(kChanging, NIF_TIP, nullptr, L"changed meanwhile") == TRUE);
+    const int removalsBefore = WindhawkUtils::UnsubclassCallCount();
     Wh_ModBeforeUninit();
     Wh_ModUninit();
     Pump();
-    CHECK_EQ(g_shell.adds, swallowed);
+    // Taken off once, on the taskbar's thread, after the hand-back (DECISIONS 73).
+    CHECK_EQ(WindhawkUtils::UnsubclassCallCount(), removalsBefore + 1);
+    CHECK_EQ(g_shell.adds, swallowed - 1);
+    CHECK(g_shellHeld.count({g_iconOwnerWnd, kGoing}) == 0);
+    CHECK(g_shellHeld.count({g_iconOwnerWnd, kChanging}) == 1);
+    const std::pair<HWND, UINT> changed = {g_iconOwnerWnd, kChanging};
+    CHECK(g_shellTips[changed] == L"changed meanwhile");
+    SendTrayNotification(NIM_DELETE, kChanging, nullptr);
     CHECK_EQ(static_cast<int>(MirroredCount()), 0);
     CHECK(g_trayWnd.load() == nullptr);
     CHECK(WindhawkUtils::UnsubclassCallCount() > 0);
@@ -1170,6 +1355,78 @@ int RunTests() {
         Wh_ModBeforeUninit();
         Wh_ModUninit();
         Pump();
+    }
+
+    // ---- switched off and on while an application carries on --------------
+    // The test the third review asked for: the mod switched off and on again
+    // and again while an application adds, changes and removes its icons,
+    // with its window open throughout. After each unload Explorer has to hold
+    // exactly the icons the application still has, as it last left them - not
+    // one it removed while the mod was unloading (DECISIONS 68).
+    printf("\n[13c] switched off and on while an application carries on\n");
+    {
+        SeedBaselineSettings();
+        SetSetting(L"perProcessRouting[0].exe", ThisExeName().c_str());
+        SetSetting(L"perProcessRouting[0].destination", L"secondary");
+
+        std::map<UINT, std::wstring> kept;  // the application's icons, and tips
+        kept[701] = L"steady";
+        CHECK(SendTrayNotification(NIM_ADD, 701, L"steady") == TRUE);
+        auto held = [&] {
+            size_t count = 0;
+            for (const auto& [id, tip] : g_shellTips) {
+                if (id.first == g_iconOwnerWnd && id.second >= 700 && id.second < 800) {
+                    count++;
+                }
+            }
+            return count;
+        };
+        bool allAsLeft = true;
+        constexpr int kCycles = 4;
+        for (int cycle = 0; cycle < kCycles; cycle++) {
+            CHECK(Wh_ModInit() == TRUE);
+            Wh_ModAfterInit();
+            CHECK(PumpUntil([] { return g_shellTrayWnd.load() == g_fakeShellWnd; }));
+            // Registered again, as applications do when asked: into tray 2,
+            // and taken out of the main tray.
+            for (const auto& [uID, tip] : kept) {
+                SendTrayNotification(NIM_ADD, uID, tip.c_str());
+            }
+            Pump();
+            CHECK_EQ(static_cast<int>(held()), 0);
+
+            const UINT fleeting = 710 + static_cast<UINT>(cycle);  // gone by the end
+            const UINT arriving = 720 + static_cast<UINT>(cycle);  // new as it unloads
+            CHECK(SendTrayNotification(NIM_ADD, fleeting, L"fleeting") == TRUE);
+            kept[701] = L"changed in cycle " + std::to_wstring(cycle);
+            CHECK(SendPartialModify(701, NIF_TIP, nullptr, kept[701].c_str()) == TRUE);
+
+            // Unloading begins, and the application carries on.
+            g_unloading.store(true);
+            CHECK(SendTrayNotification(NIM_DELETE, fleeting, nullptr) == TRUE);
+            CHECK(SendTrayNotification(NIM_ADD, arriving, L"arriving") == TRUE);
+            kept[arriving] = L"arriving";
+            Wh_ModBeforeUninit();
+            Wh_ModUninit();
+            Pump();
+
+            // Explorer holds what the application has, as it left it.
+            bool asLeft = held() == kept.size();
+            for (const auto& [uID, tip] : kept) {
+                const std::pair<HWND, UINT> id = {g_iconOwnerWnd, uID};
+                asLeft = asLeft && g_shellHeld.count(id) == 1 && g_shellTips[id] == tip;
+            }
+            allAsLeft = allAsLeft && asLeft;
+            CHECK(asLeft);
+        }
+        printf("      %d cycles: Explorer held the application's %zu icon(s), as it "
+               "left them, each time%s\n",
+               kCycles, kept.size(), allAsLeft ? "" : " - NOT");
+        for (const auto& [uID, tip] : kept) {
+            SendTrayNotification(NIM_DELETE, uID, nullptr);
+        }
+        Pump();
+        CHECK_EQ(static_cast<int>(held()), 0);
     }
 
     // ---- the tray window does not exist yet at load time -------------
@@ -1291,6 +1548,54 @@ int RunTests() {
         printf("      the tray thread stopped before unloading finished\n");
     }
 
+    // ---- a tray thread slower than Wh_ModInit's wait ----------------------
+    // Wh_ModInit took the end of its wait as leave to attach, and a thread
+    // that went on to fail left a subclass swallowing icons into trays that
+    // nothing drew (DECISIONS 69).
+    printf("\n[16b] a tray thread slower than the wait: attached only once it runs\n");
+    {
+        HANDLE hold = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        g_trayThreadHold = hold;
+        g_trayThreadStartWaitMs = 50;
+        CHECK(Wh_ModInit() == TRUE);
+        Wh_ModAfterInit();
+        CHECK(g_trayThreadState.load() == TrayThreadState::Starting);
+        CHECK(g_shellTrayWnd.load() == nullptr);
+
+        // It fails: a window of its controller's class is open, so the class
+        // cannot be registered afresh.
+        WNDCLASSEXW squatterClass = {sizeof(squatterClass)};
+        squatterClass.lpfnWndProc = DefWindowProcW;
+        squatterClass.hInstance = ModuleInstance();
+        squatterClass.lpszClassName = kControllerClassName;
+        CHECK(RegisterClassExW(&squatterClass) != 0);
+        HWND squatter = CreateWindowExW(0, kControllerClassName, nullptr, 0, 0, 0, 0, 0,
+                                        HWND_MESSAGE, nullptr, ModuleInstance(), nullptr);
+        CHECK(squatter != nullptr);
+        SetEvent(hold);
+        CHECK(PumpUntil(
+            [] { return g_trayThreadState.load() == TrayThreadState::GaveUp; }));
+
+        // With nothing to draw the mod's trays, an icon meant for one is
+        // Explorer's, as with no mod.
+        g_shell.Reset();
+        CHECK(SendTrayNotification(NIM_ADD, 501, L"no tray thread") == TRUE);
+        Pump();
+        CHECK_EQ(g_shell.adds, 1);
+        CHECK(g_shellTrayWnd.load() == nullptr);
+        printf("      not attached while it started, nor after it gave up\n");
+        SendTrayNotification(NIM_DELETE, 501, nullptr);
+
+        DestroyWindow(squatter);
+        UnregisterClassW(kControllerClassName, ModuleInstance());
+        Wh_ModBeforeUninit();
+        Wh_ModUninit();
+        g_trayThreadHold = nullptr;
+        CloseHandle(hold);
+        g_trayThreadStartWaitMs = 5000;
+        Pump();
+    }
+
     // ---- a replay message from outside the mod -------------------------
     // The message is registered by name, so any process on the desktop can
     // post it. It used to carry a pointer that the subclass delivered and
@@ -1307,6 +1612,46 @@ int RunTests() {
         Wh_ModBeforeUninit();
         Wh_ModUninit();
         Pump();
+    }
+
+    // ---- a hand-back that cannot finish in time --------------------------
+    // The hand-back can arrive inside a round of settling on the taskbar's
+    // thread - Explorer may run a message loop while it handles a record - and
+    // it is then done once that round is over. Unloading waits for it; one
+    // not done by then keeps the mod loaded rather than unload code the
+    // taskbar's thread is still in (DECISIONS 68). The subclass is left on the
+    // window, since taking it off from here is a message the taskbar's thread
+    // has to answer, and takes itself off there once the icons are back
+    // (DECISIONS 73). Last, since the store is then left as it is.
+    printf("\n[18] a hand-back still to come when unloading ends keeps the mod loaded\n");
+    {
+        CHECK(Wh_ModInit() == TRUE);
+        Wh_ModAfterInit();
+        CHECK(PumpUntil([] { return g_shellTrayWnd.load() == g_fakeShellWnd; }));
+        const size_t logAtStuck = SplitTrayTestHarness::LogSnapshot().size();
+        const DWORD budget = g_taskbarWaitMs;
+        g_taskbarWaitMs = 200;
+        const int removals = WindhawkUtils::UnsubclassCallCount();
+        g_settlingShell = true;  // a round under way, here on this thread
+        Wh_ModBeforeUninit();
+        Wh_ModUninit();
+        g_taskbarWaitMs = budget;
+        CHECK(!g_handedBack.load());
+        CHECK(LoggedSince(logAtStuck, L"stays loaded"));
+        CHECK_EQ(WindhawkUtils::UnsubclassCallCount(), removals);
+
+        // The round ends, and the wake-up after it hands the icons back and
+        // takes the subclass off: Explorer hears applications directly.
+        g_settlingShell = false;
+        SendMessageW(g_fakeShellWnd, GetReplayMessage(), 0, 0);
+        CHECK(g_handedBack.load());
+        CHECK_EQ(WindhawkUtils::UnsubclassCallCount(), removals + 1);
+        g_shell.Reset();
+        CHECK(SendTrayNotification(NIM_ADD, 601, L"after a stuck unload") == TRUE);
+        CHECK_EQ(g_shell.adds, 1);
+        SendTrayNotification(NIM_DELETE, 601, nullptr);
+        printf("      unloading ended with the mod kept loaded; the subclass came off "
+               "once the icons were back\n");
     }
 
     DestroyWindow(g_iconOwnerWnd);

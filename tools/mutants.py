@@ -6,6 +6,7 @@ Kept apart from the runner so the catalogue can grow without the runner
 growing with it.
 """
 
+from mutants_audit import audit_mutants
 from mutants_reviews import review_mutants
 
 UNIT_SUITE = "unit"
@@ -195,14 +196,16 @@ MUTANTS = [
     ),
     (
         "a secondary-tray icon stores its last message instead of the folded record",
-        "    FoldTrayRecord(&existing->payload, payload);\n    return true;",
-        "    existing->payload = payload;\n    return true;",
+        "    FoldTrayRecord(&existing->payload, payload);\n    existing->revision++;\n    return true;",
+        "    existing->payload = payload;\n    existing->revision++;\n    return true;",
         (UNIT_SUITE, INTEGRATION_SUITE),
     ),
     (
         "a replayed add draws with the application's picture, long since destroyed",
-        "    if (icon && record.size() >= wire::kFlags + sizeof(DWORD) &&",
-        "    if (false && icon && record.size() >= wire::kFlags + sizeof(DWORD) &&",
+        "    if (record.size() >= wire::kFlags + sizeof(DWORD) &&\n"
+        "        record.size() >= wire::kIcon + sizeof(DWORD)) {\n        const DWORD flags",
+        "    if (false && record.size() >= wire::kFlags + sizeof(DWORD) &&\n"
+        "        record.size() >= wire::kIcon + sizeof(DWORD)) {\n        const DWORD flags",
         (UNIT_SUITE, INTEGRATION_SUITE),
     ),
     (
@@ -312,3 +315,4 @@ MUTANTS = [
 ]
 
 MUTANTS += review_mutants(UNIT_SUITE, INTEGRATION_SUITE)
+MUTANTS += audit_mutants(UNIT_SUITE, INTEGRATION_SUITE)

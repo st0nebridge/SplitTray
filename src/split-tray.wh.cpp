@@ -520,16 +520,34 @@ void FoldTrayRecord(std::vector<BYTE>* state, const std::vector<BYTE>& incoming)
 
 // The add that puts an icon back into the shell, drawn with `icon` - the mod's
 // own copy - rather than whatever handle the application last sent, which it
-// has usually destroyed by now.
+// has usually destroyed by now. With no picture of its own to give, the mod
+// gives none: the old handle may by then be another icon's (DECISIONS 72).
 std::vector<BYTE> AddRecordFor(const std::vector<BYTE>& state, HICON icon) {
     std::vector<BYTE> record = PayloadWithMessage(state, NIM_ADD);
-    if (icon && record.size() >= wire::kFlags + sizeof(DWORD) &&
+    if (record.size() >= wire::kFlags + sizeof(DWORD) &&
         record.size() >= wire::kIcon + sizeof(DWORD)) {
+        const DWORD flags = ReadDword(record.data(), wire::kFlags);
         // USER handles are 32-bit values, as on the wire.
         WriteDword(record.data(), wire::kIcon,
                    static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(icon)));
         WriteDword(record.data(), wire::kFlags,
-                   ReadDword(record.data(), wire::kFlags) | NIF_ICON);
+                   icon ? flags | NIF_ICON : flags & ~static_cast<DWORD>(NIF_ICON));
+    }
+    return record;
+}
+
+// How an add Explorer refused is asked about: the same icon as a modify, which
+// Explorer takes only for an icon it has (DECISIONS 70). A balloon the add
+// carried is left out, so asking does not show it, and so is the picture: it
+// is asked later, and the handle the record names may be gone by then.
+std::vector<BYTE> ProbeRecordFor(const std::vector<BYTE>& add) {
+    std::vector<BYTE> record = PayloadWithMessage(add, NIM_MODIFY);
+    if (record.size() >= wire::kFlags + sizeof(DWORD) &&
+        record.size() >= wire::kIcon + sizeof(DWORD)) {
+        WriteDword(record.data(), wire::kFlags,
+                   ReadDword(record.data(), wire::kFlags) & kLastingFlags &
+                       ~static_cast<DWORD>(NIF_ICON));
+        WriteDword(record.data(), wire::kIcon, 0);
     }
     return record;
 }
@@ -1280,9 +1298,9 @@ struct MirroredIcon {
     // holding an icon it can no longer be told about.
     Destination destination = Destination::Primary;
 
-    // Whether Explorer has the icon, as far as its answers say: from its
-    // application's own add, or from a replay Explorer took. Only the taskbar's
-    // thread changes it.
+    // Whether Explorer has the icon, as far as its answers say: to its
+    // application's own adds and modifies, and to the mod's (DECISIONS 70).
+    // Only the taskbar's thread changes it.
     bool forwardedToShell = true;
 
     // Whether the icon is meant to be with Explorer. A move changes this and
@@ -1290,10 +1308,26 @@ struct MirroredIcon {
     // Explorer the icon as it is by then (SettleShellIcons, DECISIONS 66).
     bool shellTarget = true;
 
-    // How many times Explorer has refused to take the icon back since it was
-    // last asked to. After kShellAttempts it is left to its application to add
+    // How many times Explorer has refused to take the icon back, or its
+    // version, since it was last asked to. After kShellAttempts it is left as
+    // Explorer has it - one Explorer does not have, to its application to add
     // again (OwedToShell).
     int shellRefusals = 0;
+
+    // Counts what its application has changed, so the taskbar's thread can
+    // tell whether anything arrived while Explorer was taking the icon back.
+    uint64_t revision = 0;
+
+    // Whether Explorer has less of the icon than the store: something arrived
+    // while Explorer was taking it back - swallowed, since Explorer did not
+    // have it yet - or Explorer did not take its version. The taskbar's thread
+    // then hands Explorer the whole record again (DECISIONS 71).
+    bool shellBehind = false;
+
+    // Whether Explorer refused its application's add and has not yet been
+    // asked if that was because it has the icon already. The taskbar's next
+    // round asks, after the messages waiting then (DECISIONS 70).
+    bool shellUnconfirmed = false;
 
     // Whether that decision was made with anything to decide from.
     //
@@ -1785,6 +1819,25 @@ std::atomic<TrayThreadState> g_trayThreadState{TrayThreadState::Starting};
 // left to carry on, and an unload can then come before its window exists
 // (StopTrayThread); the integration test sets it to 0 to make that happen.
 DWORD g_trayThreadStartWaitMs = 5000;
+// The integration test holds the tray thread here, before it registers
+// anything, to load the mod while the thread is still starting.
+HANDLE g_trayThreadHold = nullptr;
+
+// Set on the taskbar's thread once every icon is back with Explorer as the mod
+// unloads. Until then the subclass keeps track of icons, unloading or not;
+// from then it passes everything on untouched until it is removed
+// (DECISIONS 68).
+std::atomic<bool> g_handedBack{false};
+// Whether unloading ended before that happened (HandBackToShell).
+bool g_handBackStuck = false;
+// How long unloading waits for the taskbar's thread at each step that needs
+// it (DECISIONS 73); the tests shorten it.
+DWORD g_taskbarWaitMs = 5000;
+// How many calls of the mod's subclass are under way on the taskbar's thread.
+// Unloading does not finish while there are any (DECISIONS 73).
+std::atomic<int> g_subclassDepth{0};
+// Whether the mod's panels could not be taken out of the taskbars in time.
+bool g_panelsStuck = false;
 
 // Messages posted to the mod's own tray window.
 constexpr UINT WM_ST_REFRESH = WM_APP + 0x101;   // icons changed, re-layout
@@ -2040,10 +2093,29 @@ FloatingView FloatingViewOf(int number, bool withIcons = true) {
 // copy when the icon's application goes (DECISIONS 60).
 struct CellSnapshot {
     OwnedIcon icon;
+    // The cell's tooltip: empty when tooltips are switched off (DECISIONS 77).
     std::wstring tip;
     std::wstring key;
     uint64_t serial = 0;
+    // Whether the store has a picture for the icon, which `icon` is a copy of
+    // unless copying it failed.
+    bool hasPicture = false;
 };
+
+// What a cell updated in place does with its picture (DECISIONS 76). It was
+// given a new one only when there was one, so a picture its application took
+// away stayed on show in the taskbar until something else rebuilt the tray.
+// One that could not be copied for this refresh is still in the store
+// (DECISIONS 72): the cell keeps what it shows, and the next refresh copies it
+// again.
+enum class CellPicture { Keep, Replace, Clear };
+
+CellPicture CellPictureOf(const CellSnapshot& cell) {
+    if (!cell.hasPicture) {
+        return CellPicture::Clear;
+    }
+    return cell.icon.get() ? CellPicture::Replace : CellPicture::Keep;
+}
 
 // Tray `number`'s icons, in the store's order.
 std::vector<CellSnapshot> CellSnapshotsOf(int number) {
@@ -2051,8 +2123,9 @@ std::vector<CellSnapshot> CellSnapshotsOf(int number) {
     std::lock_guard<std::mutex> lock(g_mutex);
     for (size_t i : IconsInTrayLocked(number)) {
         const MirroredIcon& icon = g_icons[i];
-        cells.push_back(
-            {OwnedIcon::CopyOf(icon.icon), icon.tip, StableKeyOf(icon), icon.serial});
+        cells.push_back({OwnedIcon::CopyOf(icon.icon),
+                         g_settings.showTooltips ? icon.tip : std::wstring(),
+                         StableKeyOf(icon), icon.serial, icon.icon != nullptr});
     }
     return cells;
 }
@@ -2364,14 +2437,6 @@ LRESULT CALLBACK FloatingTrayProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
 }
 
 HWND CreateTooltip(HWND owner) {
-    bool wanted;
-    {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        wanted = g_settings.showTooltips;
-    }
-    if (!wanted) {
-        return nullptr;
-    }
     INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_BAR_CLASSES};
     InitCommonControlsEx(&icc);
 
@@ -2399,6 +2464,7 @@ void SyncFloatingTrays() {
     std::map<int, TrayLayout> layouts;
     int opacity;
     bool onTop;
+    bool tooltips;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         RecomputeGeometryLocked();
@@ -2407,6 +2473,7 @@ void SyncFloatingTrays() {
         }
         opacity = g_settings.opacity;
         onTop = g_settings.alwaysOnTop;
+        tooltips = g_settings.showTooltips;
     }
 
     for (auto it = g_floatingTrays.begin(); it != g_floatingTrays.end();) {
@@ -2442,13 +2509,25 @@ void SyncFloatingTrays() {
                 continue;
             }
             SetWindowLongPtrW(tray.wnd, GWLP_USERDATA, number);
-            tray.tooltip = CreateTooltip(tray.wnd);
             {
                 std::lock_guard<std::mutex> lock(g_mutex);
                 g_floatingWnds[number] = tray.wnd;
             }
             Wh_Log(L"tray %d floats at (%d,%d) %dx%d", number, layout.x, layout.y,
                    layout.width, layout.height);
+        }
+        // Every time, not only for a new window: the setting was read when the
+        // window was made, so switching it had no effect on a tray already
+        // there (DECISIONS 77).
+        if (tooltips && !tray.tooltip) {
+            tray.tooltip = CreateTooltip(tray.wnd);
+        } else if (!tooltips && tray.tooltip) {
+            TTTOOLINFOW ti = {sizeof(ti)};
+            ti.hwnd = tray.wnd;
+            ti.uId = 0;
+            SendMessageW(tray.tooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+            DestroyWindow(tray.tooltip);
+            tray.tooltip = nullptr;
         }
         SetLayeredWindowAttributes(tray.wnd, 0, static_cast<BYTE>(opacity), LWA_ALPHA);
         SetWindowPos(tray.wnd, onTop ? HWND_TOPMOST : HWND_NOTOPMOST, layout.x, layout.y,
@@ -2528,6 +2607,10 @@ void UnregisterTrayThreadClasses() {
 }
 
 DWORD WINAPI TrayThreadProc(LPVOID) {
+    if (g_trayThreadHold) {
+        WaitForSingleObject(g_trayThreadHold, INFINITE);
+    }
+
     WNDCLASSEXW controllerClass = {sizeof(controllerClass)};
     controllerClass.lpfnWndProc = ControllerProc;
     controllerClass.lpszClassName = kControllerClassName;
@@ -2545,12 +2628,18 @@ DWORD WINAPI TrayThreadProc(LPVOID) {
     arrangeClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
 
     // All or nothing: without its thread the mod never attaches, and every
-    // icon stays where Explorer puts it. RegisterModClass says which failed.
-    if (!RegisterModClass(&controllerClass) || !RegisterModClass(&floatingClass) ||
-        !RegisterModClass(&arrangeClass)) {
+    // icon stays where Explorer puts it (DECISIONS 69). RegisterModClass says
+    // which failed. Wh_ModInit may have stopped waiting already, so this is
+    // where the outcome is logged.
+    auto giveUp = []() -> DWORD {
         UnregisterTrayThreadClasses();
+        Wh_Log(L"the tray thread gave up; Split Tray leaves Explorer's tray alone");
         g_trayThreadState.store(TrayThreadState::GaveUp);
         return 1;
+    };
+    if (!RegisterModClass(&controllerClass) || !RegisterModClass(&floatingClass) ||
+        !RegisterModClass(&arrangeClass)) {
+        return giveUp();
     }
 
     // Never shown. A hidden top-level window still receives broadcasts, which
@@ -2560,9 +2649,7 @@ DWORD WINAPI TrayThreadProc(LPVOID) {
                                 ModuleInstance(), nullptr);
     if (!hWnd) {
         Wh_Log(L"CreateWindowExW for the controller window failed: %u", GetLastError());
-        UnregisterTrayThreadClasses();
-        g_trayThreadState.store(TrayThreadState::GaveUp);
-        return 1;
+        return giveUp();
     }
 
     g_trayWnd.store(hWnd);
@@ -2663,9 +2750,42 @@ int ArrangeListOfTray(int number) {
     return -1;
 }
 
+// What the arrange window's rows are made of, without their pictures and
+// labels: which icons there are, the tray each is in, and whether it is in that
+// tray's overflow (DECISIONS 75). The window was filled when it opened and
+// again only after a move made in it, so an application started or closed
+// meanwhile, or an icon moved from a tray's menu, left rows missing or stale.
+// Pictures and tooltips are left out: they change several times a second, and
+// filling the lists again resets what the user has selected.
+std::wstring ArrangeLayoutNow() {
+    std::wstring layout;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    for (const auto& icon : g_primaryOnly) {
+        layout += std::to_wstring(icon.serial) + L":1;";
+    }
+    for (const auto& icon : g_icons) {
+        layout += std::to_wstring(icon.serial) + L':' + std::to_wstring(icon.shownTray) +
+                  (IsIconHidden(StableKeyOf(icon)) ? L"h;" : L";");
+    }
+    return layout;
+}
+
+// What the lists were last filled with (ArrangeLayoutNow).
+std::wstring g_arrangeLayout;
+
+std::wstring ArrangeKeyOfItem(int list, int item);
+
 void PopulateArrangeLists() {
     if (g_arrangeLists.empty()) {
         return;
+    }
+    g_arrangeLayout = ArrangeLayoutNow();
+    // What is selected in each list stays selected, where it is still there.
+    std::vector<std::wstring> selected;
+    for (size_t i = 0; i < g_arrangeLists.size(); i++) {
+        selected.push_back(ArrangeKeyOfItem(
+            static_cast<int>(i),
+            ListView_GetNextItem(g_arrangeLists[i], -1, LVNI_SELECTED)));
     }
 
     struct Row {
@@ -2722,7 +2842,14 @@ void PopulateArrangeLists() {
         item.pszText = const_cast<PWSTR>(text.c_str());
         item.iImage = imageIndex;
         item.lParam = static_cast<LPARAM>(g_arrangeKeys.size() - 1);
-        ListView_InsertItem(g_arrangeLists[static_cast<size_t>(row.list)], &item);
+        HWND list = g_arrangeLists[static_cast<size_t>(row.list)];
+        const int inserted = ListView_InsertItem(list, &item);
+        std::wstring& wasSelected = selected[static_cast<size_t>(row.list)];
+        if (inserted >= 0 && !wasSelected.empty() && wasSelected == row.key) {
+            ListView_SetItemState(list, inserted, LVIS_SELECTED | LVIS_FOCUSED,
+                                  LVIS_SELECTED | LVIS_FOCUSED);
+            wasSelected.clear();
+        }
         counts[static_cast<size_t>(row.list)]++;
     }
 
@@ -2845,6 +2972,9 @@ void EndArrangeDrag(bool drop) {
     }
     g_arrangeDragItem = -1;
     g_arrangeDragList = -1;
+    // What changed during the drag was left for its end (RefreshArrangeWindow).
+    // Posted: this can run while the window is being destroyed.
+    NotifyTrayWindow(WM_ST_REFRESH);
 }
 
 LRESULT CALLBACK ArrangeWndProc(HWND hWnd, UINT msg, WPARAM wParam,
@@ -3095,10 +3225,12 @@ void CloseArrangeWindow() {
     }
 }
 
-// After a change that may have added or removed a tray. The lists follow the
-// trays, so a window laid out for the old set is replaced; otherwise it is
-// repopulated only when asked - doing it on every icon update would reset the
-// user's selection several times a second.
+// After a change to the icons or the trays. The lists follow the trays, so a
+// window laid out for the old set is replaced. Otherwise they are filled again
+// when asked, or when which icons there are or where has changed
+// (ArrangeLayoutNow, DECISIONS 75) - not for every change of picture or
+// tooltip, which would reset the user's selection several times a second, and
+// not in the middle of a drag, whose end catches up (EndArrangeDrag).
 void RefreshArrangeWindow(bool repopulate) {
     if (!g_arrangeWnd || !IsWindow(g_arrangeWnd)) {
         return;
@@ -3106,7 +3238,8 @@ void RefreshArrangeWindow(bool repopulate) {
     if (AvailableTrayNumbers() != g_arrangeTrays) {
         CloseArrangeWindow();
         ShowArrangeWindow();
-    } else if (repopulate) {
+    } else if (!g_arrangeDragging &&
+               (repopulate || ArrangeLayoutNow() != g_arrangeLayout)) {
         PopulateArrangeLists();
     }
 }
@@ -3228,7 +3361,7 @@ LRESULT DeliverToShell(HWND shellTrayWnd,
 }
 
 // ---------------------------------------------------------------------------
-// Settling Explorer's tray (DECISIONS 58, 66)
+// Settling Explorer's tray (DECISIONS 58, 66, 68, 71)
 //
 // A move changes where an icon should be (shellTarget) and wakes the taskbar's
 // thread, and nothing else. That thread then compares, icon by icon, where it
@@ -3249,12 +3382,17 @@ LRESULT DeliverToShell(HWND shellTrayWnd,
 //
 // In between, an application's own messages are passed on by where the icon
 // really is. One Explorer has not been handed yet swallows them, and they are
-// in the add when it goes.
+// in the add when it goes. So are ones that arrive while Explorer is taking it
+// - Explorer may send messages of its own while it handles a record, and they
+// come back through the subclass - by a second record, the whole icon again as
+// a modify (shellBehind).
 // ---------------------------------------------------------------------------
 
-// How many times Explorer is asked to take an icon back before it is left to
-// the icon's application (OwedToShell).
+// How many times Explorer is asked to take an icon back, or its version,
+// before it is left as Explorer has it (OwedToShell).
 constexpr int kShellAttempts = 3;
+
+void RecordShellHoldingLocked(MirroredIcon* icon, bool holds);
 
 // The icon with this serial in either list, or null. Caller holds g_mutex.
 MirroredIcon* FindIconBySerialLocked(uint64_t serial) {
@@ -3271,10 +3409,21 @@ MirroredIcon* FindIconBySerialLocked(uint64_t serial) {
 // Whether the taskbar's thread has something to hand Explorer for this icon.
 // Caller holds g_mutex.
 bool NeedsSettlingLocked(const MirroredIcon& icon) {
-    if (icon.payload.empty() || icon.shellTarget == icon.forwardedToShell) {
+    if (icon.payload.empty()) {
         return false;
     }
-    return !icon.shellTarget || icon.shellRefusals < kShellAttempts;
+    if (!icon.shellTarget) {
+        // Always taken out: a ghost left in Explorer's tray costs more than a
+        // refused call.
+        return icon.forwardedToShell;
+    }
+    if (icon.shellUnconfirmed) {
+        return true;
+    }
+    if (icon.forwardedToShell && !icon.shellBehind) {
+        return false;
+    }
+    return icon.shellRefusals < kShellAttempts;
 }
 
 // An icon meant to be in Explorer's tray that Explorer would not take back.
@@ -3288,23 +3437,34 @@ bool OwedToShell(const MirroredIcon& icon) {
 }
 
 // What the taskbar's thread hands Explorer for one icon.
+enum class ShellChange {
+    Add,      // Explorer does not have it
+    Update,   // Explorer has less of it than the store (shellBehind)
+    Delete,   // Explorer has it and should not
+    Confirm,  // whether Explorer has it, after refusing its add (shellUnconfirmed)
+};
+
 struct ShellDelivery {
     uint64_t serial = 0;
     HWND senderWnd = nullptr;
-    bool add = false;
-    std::vector<BYTE> record;         // the add, or the delete
-    std::vector<BYTE> versionRecord;  // after an add, when there is a version
+    ShellChange change = ShellChange::Delete;
+    std::vector<BYTE> record;         // the add, the icon as a modify, or the delete
+    std::vector<BYTE> versionRecord;  // after an add or update, when there is a version
+    uint64_t revision = 0;            // the icon's, when the record was built
     // A copy of the icon's picture for Explorer to copy in turn, released once
     // the record has been delivered.
     OwnedIcon picture;
+    bool pictureLost = false;  // the store had one, and copying it failed
+    std::wstring exe;          // whose it is, for the log
 };
 
 // The next icon not in `skip` whose place in Explorer's tray is not where it
 // should be, and what to hand Explorer for it. Caller holds g_mutex.
 //
 // An add is built from the folded record and drawn with a fresh copy of the
-// mod's own picture. It is followed by the version the application negotiated,
-// since a re-added icon starts again at version 0.
+// mod's own picture, or with none when that cannot be copied (DECISIONS 72).
+// It is followed by the version the application negotiated, since a re-added
+// icon starts again at version 0. An update is the same, as a modify.
 bool NextShellDeliveryLocked(const std::vector<uint64_t>& skip, ShellDelivery* out) {
     for (auto* list : {&g_icons, &g_primaryOnly}) {
         for (const auto& icon : *list) {
@@ -3314,13 +3474,25 @@ bool NextShellDeliveryLocked(const std::vector<uint64_t>& skip, ShellDelivery* o
             }
             out->serial = icon.serial;
             out->senderWnd = icon.ownerWnd;
-            out->add = icon.shellTarget;
-            if (!out->add) {
+            out->revision = icon.revision;
+            out->exe = std::wstring(FileNameOf(icon.exePath));
+            if (!icon.shellTarget) {
+                out->change = ShellChange::Delete;
                 out->record = PayloadWithMessage(icon.payload, NIM_DELETE);
                 return true;
             }
+            if (icon.shellUnconfirmed) {
+                out->change = ShellChange::Confirm;
+                out->record = ProbeRecordFor(icon.payload);
+                return true;
+            }
+            out->change = icon.forwardedToShell ? ShellChange::Update : ShellChange::Add;
             out->picture = OwnedIcon::CopyOf(icon.icon);
+            out->pictureLost = icon.icon && !out->picture.get();
             out->record = AddRecordFor(icon.payload, out->picture.get());
+            if (out->change == ShellChange::Update) {
+                out->record = PayloadWithMessage(out->record, NIM_MODIFY);
+            }
             if (icon.version) {
                 out->versionRecord = SetVersionRecordFor(icon.payload, icon.version);
             }
@@ -3333,86 +3505,142 @@ bool NextShellDeliveryLocked(const std::vector<uint64_t>& skip, ShellDelivery* o
 // What became of one delivery.
 enum class ShellOutcome {
     Settled,   // Explorer has the icon, or has let it go, as it should
-    Refused,   // Explorer would not take it back; it is asked again later
-    GaveUp,    // ...kShellAttempts times, so it is left to its application
+    Refused,   // Explorer would not take it back, or its version; asked again later
+    GaveUp,    // ...kShellAttempts times, so it is left as Explorer has it
     Orphaned,  // taken back, for an icon removed while it was being handed over
 };
 
-// Records what Explorer did with `delivery`. Caller holds g_mutex, on the
-// taskbar's thread.
-ShellOutcome RecordShellDeliveryLocked(const ShellDelivery& delivery, bool taken) {
+// Records what Explorer did with `delivery`: whether it took the record, and
+// the version after it. Caller holds g_mutex, on the taskbar's thread.
+ShellOutcome RecordShellDeliveryLocked(const ShellDelivery& delivery,
+                                       bool taken,
+                                       bool versionTaken) {
     MirroredIcon* icon = FindIconBySerialLocked(delivery.serial);
-    if (!delivery.add) {
+    if (delivery.change == ShellChange::Delete) {
         // Explorer does not have it now, whatever it answered.
         if (icon) {
             icon->forwardedToShell = false;
+            icon->shellBehind = false;
+            icon->shellUnconfirmed = false;
+        }
+        return ShellOutcome::Settled;
+    }
+    if (delivery.change == ShellChange::Confirm) {
+        // Taken, Explorer has it; refused, it has not, and the icon is left
+        // to its application, which was told its add failed (DECISIONS 70).
+        if (icon) {
+            icon->shellUnconfirmed = false;
+            RecordShellHoldingLocked(icon, taken);
         }
         return ShellOutcome::Settled;
     }
     if (!icon) {
-        return taken ? ShellOutcome::Orphaned : ShellOutcome::Settled;
+        return taken && delivery.change == ShellChange::Add ? ShellOutcome::Orphaned
+                                                            : ShellOutcome::Settled;
     }
     if (taken) {
         icon->forwardedToShell = true;
-        icon->shellRefusals = 0;
-        return ShellOutcome::Settled;
+        // What arrived meanwhile was swallowed - Explorer did not have the
+        // icon yet - and a version Explorer did not take is not its version.
+        icon->shellBehind = icon->revision != delivery.revision || !versionTaken;
+        if (versionTaken) {
+            if (!icon->shellBehind) {
+                icon->shellRefusals = 0;
+            }
+            return ShellOutcome::Settled;
+        }
+    } else {
+        // An add refused, or an update for an icon Explorer turns out not to
+        // have: either way, it does not have it.
+        icon->forwardedToShell = false;
+        icon->shellBehind = false;
     }
-    icon->forwardedToShell = false;
     icon->shellRefusals++;
     return icon->shellRefusals >= kShellAttempts ? ShellOutcome::GaveUp
                                                  : ShellOutcome::Refused;
 }
 
+// Set while SettleShellIcons runs. Taskbar's thread only.
+bool g_settlingShell = false;
+
 // Settles every icon whose place in Explorer's tray is not where it should be,
 // through `deliver`, which hands Explorer a record and returns its answer. On
-// the taskbar's thread; the tests pass a stand-in for Explorer.
+// the taskbar's thread; the tests pass a stand-in for Explorer. Returns whether
+// it handed Explorer anything.
 //
 // Each icon is tried once per call. One Explorer refused is tried again on a
 // later call - the tray thread's timer makes one every tick while anything is
-// waiting - and after kShellAttempts is left to its application.
+// waiting - and after kShellAttempts is left as Explorer has it.
+//
+// Never inside itself. Explorer may run a message loop while it handles a
+// record, and a wake-up posted meanwhile is dispatched from inside it: a round
+// started there handed Explorer again what the round under way was handing it.
+// What that wake-up was for is left to the round under way, or the next one.
 template <typename Deliver>
-void SettleShellIcons(Deliver deliver) {
+bool SettleShellIcons(Deliver deliver) {
+    if (g_settlingShell) {
+        return false;
+    }
+    g_settlingShell = true;
+    bool handedOver = false;
     std::vector<uint64_t> tried;
     for (;;) {
         ShellDelivery delivery;
         {
             std::lock_guard<std::mutex> lock(g_mutex);
             if (!NextShellDeliveryLocked(tried, &delivery)) {
-                return;
+                break;
             }
         }
         tried.push_back(delivery.serial);
+        handedOver = true;
 
         // Outside the lock: Explorer may send messages of its own while it
         // handles this one, and they come back through the subclass.
         bool taken = deliver(delivery.senderWnd, delivery.record) != FALSE;
-        if (delivery.add && !taken) {
+        if (delivery.change == ShellChange::Add && !taken) {
             // Explorer refuses an add for an icon it has already. Asked to
             // update it instead, it says which it was.
             taken = deliver(delivery.senderWnd,
                             PayloadWithMessage(delivery.record, NIM_MODIFY)) != FALSE;
         }
-        if (delivery.add && taken && !delivery.versionRecord.empty()) {
-            deliver(delivery.senderWnd, delivery.versionRecord);
+        bool versionTaken = true;
+        if ((delivery.change == ShellChange::Add || delivery.change == ShellChange::Update) &&
+            taken && !delivery.versionRecord.empty()) {
+            versionTaken = deliver(delivery.senderWnd, delivery.versionRecord) != FALSE;
         }
 
         ShellOutcome outcome;
         {
             std::lock_guard<std::mutex> lock(g_mutex);
-            outcome = RecordShellDeliveryLocked(delivery, taken);
+            outcome = RecordShellDeliveryLocked(delivery, taken, versionTaken);
         }
         const DWORD uID = ReadDword(delivery.record.data(), wire::kUID);
+        const wchar_t* exe = delivery.exe.empty() ? L"?" : delivery.exe.c_str();
         switch (outcome) {
             case ShellOutcome::Settled:
                 break;
             case ShellOutcome::Refused:
-                Wh_Log(L"Explorer did not take back icon uID %u; asking again later",
-                       uID);
+                if (taken) {
+                    Wh_Log(L"Explorer took back icon uID %u (%s) but not its version; "
+                           L"asking again later",
+                           uID, exe);
+                } else {
+                    Wh_Log(L"Explorer did not take back icon uID %u (%s); asking again "
+                           L"later",
+                           uID, exe);
+                }
                 break;
             case ShellOutcome::GaveUp:
-                Wh_Log(L"Explorer would not take back icon uID %u; it is left to its "
-                       L"application to add again",
-                       uID);
+                if (taken) {
+                    Wh_Log(L"Explorer would not take the version of icon uID %u (%s); "
+                           L"it is left at the one Explorer gives it",
+                           uID, exe);
+                } else {
+                    Wh_Log(L"Explorer would not take back icon uID %u (%s); it is left "
+                           L"to its application to add again",
+                           uID, exe);
+                }
                 break;
             case ShellOutcome::Orphaned:
                 // Its application removed it while Explorer was taking it.
@@ -3420,6 +3648,75 @@ void SettleShellIcons(Deliver deliver) {
                         PayloadWithMessage(delivery.record, NIM_DELETE));
                 break;
         }
+        if (delivery.pictureLost) {
+            Wh_Log(L"the picture of icon uID %u (%s) could not be copied; Explorer "
+                   L"was handed it without one",
+                   uID, exe);
+        }
+    }
+    g_settlingShell = false;
+    return handedOver;
+}
+
+// As the mod unloads, on the taskbar's thread: every icon whose application is
+// still there goes back to Explorer as it is by then, and the subclass stops
+// keeping track, in one go (DECISIONS 68). Keeping track used to stop as soon
+// as unloading began, while the mod's thread was still being stopped, and an
+// application's messages then went to an Explorer that did not have the icon:
+// one removed meanwhile was put back by the hand-back, and one changed
+// meanwhile was put back as it had been. A message handled between a
+// hand-back and the subclass letting go would be swallowed into a tray that is
+// gone.
+//
+// What arrives while it runs is handed back by another round: a new icon,
+// swallowed into a tray that is going, or a change to one Explorer was taking.
+// A hand-back that arrives inside a round of settling waits for that round to
+// end (OnShellTrayWake).
+//
+// Only icons the mod took away are handed back. One meant for Explorer all
+// along that Explorer has already refused is left to its application, as
+// before: found live, Explorer's own icons - its volume icon among them -
+// register again when the mod is loaded into a running Explorer, and Explorer
+// refuses them; handing them back meant three more refusals each, every time
+// the mod unloaded.
+template <typename Deliver>
+void HandIconsBackToShell(Deliver deliver) {
+    if (g_handedBack.load() || g_settlingShell) {
+        return;
+    }
+    for (int round = 0; round < kShellAttempts; round++) {
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            for (auto* list : {&g_icons, &g_primaryOnly}) {
+                for (auto& icon : *list) {
+                    // An icon whose application has gone is left as it is.
+                    const bool target =
+                        IsWindow(icon.ownerWnd) ? true : icon.forwardedToShell;
+                    if (target != icon.shellTarget) {
+                        icon.shellTarget = target;
+                        icon.shellRefusals = 0;
+                    }
+                }
+            }
+        }
+        if (!SettleShellIcons(deliver)) {
+            break;
+        }
+    }
+    g_handedBack.store(true);
+}
+
+// What a wake-up does, on the taskbar's thread: settles what is waiting, or,
+// once the mod is unloading, hands every icon back. Both after a round that
+// unloading began in the middle of, since the hand-back may have been
+// dispatched from inside it and waited (DECISIONS 68).
+template <typename Deliver>
+void OnShellTrayWake(Deliver deliver) {
+    if (!g_unloading.load()) {
+        SettleShellIcons(deliver);
+    }
+    if (g_unloading.load()) {
+        HandIconsBackToShell(deliver);
     }
 }
 
@@ -3433,22 +3730,58 @@ void WakeReplayDelivery() {
     }
 }
 
-// What Explorer answered an application's own add or modify for an icon it
-// had refused to take back (OwedToShell): yes means it has the icon now.
-// Caller holds g_mutex, on the taskbar's thread.
-void RecordShellAnswerLocked(const TrayNotification& n, bool taken) {
-    if (!taken) {
-        return;
+// Whether Explorer has an icon, as its answer to its application - or to the
+// mod asking on its behalf - says (DECISIONS 70). One Explorer does not have is
+// left to its application, which has been told so, rather than handed to
+// Explorer by the mod: its record may be made of modifies alone, which would
+// recreate the icon without most of it (DECISIONS 49). Caller holds g_mutex.
+void RecordShellHoldingLocked(MirroredIcon* icon, bool holds) {
+    if (!holds) {
+        icon->forwardedToShell = false;
+        icon->shellBehind = false;
+        icon->shellRefusals = kShellAttempts;
+    } else if (!icon->forwardedToShell) {
+        icon->forwardedToShell = true;
+        icon->shellBehind = false;
+        icon->shellRefusals = 0;
     }
+}
+
+// What Explorer answered an application's own add or modify, passed on to it.
+// Returns whether the taskbar's thread has to ask Explorer about the icon.
+//
+// A refused add says nothing yet: Explorer refuses to add an icon it has
+// already, which is every application's add when the mod is loaded into a
+// running Explorer. It is asked with a modify on the taskbar's next round, not
+// here: every application registers again at once then, shell32 gives up on a
+// tray that keeps it waiting, and an application that does not retry - Tauri's
+// tray library does not - loses its icon (DECISIONS 51). Asked here, every
+// refused add made two calls into Explorer in that burst instead of one; live,
+// with the question asked here, a log listener attached and the processor
+// busy, Telemachus's icon was lost in two loads of six. Caller holds g_mutex,
+// on the taskbar's thread.
+bool RecordShellAnswerLocked(const TrayNotification& n, bool taken) {
     for (auto* list : {&g_icons, &g_primaryOnly}) {
         for (auto& icon : *list) {
-            if (SameIcon(icon, n)) {
-                icon.forwardedToShell = true;
-                icon.shellRefusals = 0;
-                return;
+            if (!SameIcon(icon, n)) {
+                continue;
             }
+            if (!taken && n.message == NIM_ADD) {
+                icon.shellUnconfirmed = true;
+                return true;
+            }
+            // An add Explorer takes is a new icon there, at version 0; one it
+            // refused because it has the icon already, above, leaves the
+            // version as it was (DECISIONS 74).
+            if (n.message == NIM_ADD) {
+                icon.version = 0;
+            }
+            icon.shellUnconfirmed = false;
+            RecordShellHoldingLocked(&icon, taken);
+            return false;
         }
     }
+    return false;
 }
 
 // Puts one icon where its destination says, given which trays exist now: into
@@ -3546,6 +3879,9 @@ void ReplayRoutingChanges() {
         WakeReplayDelivery();
     }
     if (changed) {
+        // Among them icons whose application went without removing them,
+        // which no message says (DECISIONS 75).
+        NotifyTrayWindow(WM_ST_REFRESH);
 #ifndef SPLITTRAY_NO_XAML
         SplitTrayXaml::RequestEmbeddedRefresh();
 #endif
@@ -3629,12 +3965,30 @@ void ApplySettingsToTrackedIcons() {
     }
 }
 
+// Takes the mod's own copy of a picture an application sent: the application
+// is free to destroy its own once the shell has answered. One that cannot be
+// copied leaves the picture the icon had - it used to be let go first, which
+// left the icon with none at all (DECISIONS 72). Caller holds g_mutex.
+void TakePictureLocked(MirroredIcon* icon, HICON sent) {
+    HICON copy = nullptr;
+    if (sent) {
+        copy = CopyIcon(sent);
+        if (!copy) {
+            return;
+        }
+    }
+    if (icon->icon) {
+        DestroyIcon(icon->icon);
+    }
+    icon->icon = copy;
+}
+
 // Updates the store from a parsed notification. Caller must hold g_mutex.
 // Returns true if the secondary tray needs repainting. `outRetractFromShell`
 // is set for an icon new to the mod that goes to one of its trays: Explorer
 // may have it already, and is to be told to let it go (DECISIONS 64).
-// `outRecordShellAnswer` is set when Explorer's answer to the message says
-// whether it has the icon, and is to be recorded (RecordShellAnswerLocked).
+// `outRecordShellAnswer` is set for an add or modify passed on to Explorer,
+// whose answer says whether it has the icon (RecordShellAnswerLocked).
 bool ApplyNotificationLocked(const TrayNotification& n,
                              const std::vector<BYTE>& payload,
                              bool* outForwardToShell,
@@ -3692,6 +4046,7 @@ bool ApplyNotificationLocked(const TrayNotification& n,
         // told its tray does not support the version it asked for.
         if (existing) {
             existing->version = n.version;
+            existing->revision++;
             *outForwardToShell = existing->forwardedToShell;
         } else {
             *outForwardToShell = true;
@@ -3744,9 +4099,6 @@ bool ApplyNotificationLocked(const TrayNotification& n,
         // there now (OwedToShell, DECISIONS 66).
         const bool owed = OwedToShell(*existing);
         forwardToShell = existing->forwardedToShell || owed;
-        if (outRecordShellAnswer) {
-            *outRecordShellAnswer = owed;
-        }
         mirror = plan.mirror;
         mirrorTray = plan.tray;
     } else {
@@ -3760,6 +4112,20 @@ bool ApplyNotificationLocked(const TrayNotification& n,
         mirrorTray = plan.tray;
     }
     *outForwardToShell = forwardToShell;
+    // Whatever Explorer answers is recorded, not only for an icon it had
+    // refused: an application's own add it refused was recorded as there
+    // (DECISIONS 70).
+    if (outRecordShellAnswer) {
+        *outRecordShellAnswer = forwardToShell;
+    }
+    // An add the mod answers itself is taken, and is a registration afresh:
+    // version 0 until its application asks for another. An icon re-registered
+    // by GUID from a new window kept the version the old one had asked for.
+    // One passed on to Explorer is decided by Explorer's answer
+    // (RecordShellAnswerLocked) (DECISIONS 74).
+    if (existing && n.message == NIM_ADD && !forwardToShell) {
+        existing->version = 0;
+    }
 
     // Why this icon went where it did. A sticky decision and a fresh one that
     // happened to agree are indistinguishable from the outcome alone, and that
@@ -3813,6 +4179,7 @@ bool ApplyNotificationLocked(const TrayNotification& n,
         }
         existing->shownTray = 0;
         FoldTrayRecord(&existing->payload, payload);
+        existing->revision++;
         if (n.flags & NIF_MESSAGE) {
             existing->callbackMessage = n.callbackMessage;
         }
@@ -3828,11 +4195,7 @@ bool ApplyNotificationLocked(const TrayNotification& n,
             existing->tip = n.tip;
         }
         if (n.flags & NIF_ICON) {
-            HICON previous = existing->icon;
-            existing->icon = n.icon ? CopyIcon(n.icon) : nullptr;
-            if (previous) {
-                DestroyIcon(previous);
-            }
+            TakePictureLocked(existing, n.icon);
         }
         if (!n.exePath.empty()) {
             existing->exePath = n.exePath;
@@ -3868,13 +4231,7 @@ bool ApplyNotificationLocked(const TrayNotification& n,
     // NIF_* flags say which fields are meaningful; anything else keeps its old
     // value, exactly as the real tray behaves on a partial NIM_MODIFY.
     if (n.flags & NIF_ICON) {
-        HICON previous = existing->icon;
-        // Take our own copy: the owning application is free to destroy its icon
-        // once the shell has acknowledged the message.
-        existing->icon = n.icon ? CopyIcon(n.icon) : nullptr;
-        if (previous) {
-            DestroyIcon(previous);
-        }
+        TakePictureLocked(existing, n.icon);
     }
     if (n.flags & NIF_TIP) {
         existing->tip = n.tip;
@@ -3889,6 +4246,7 @@ bool ApplyNotificationLocked(const TrayNotification& n,
         existing->exePath = n.exePath;
     }
     FoldTrayRecord(&existing->payload, payload);
+    existing->revision++;
     return true;
 }
 
@@ -3971,20 +4329,39 @@ bool SecondaryIconScreenRect(const IconRectQuery& query, RECT* out) {
     return found;
 }
 
+// Counts a call of the subclass for as long as it runs: unloading does not
+// finish while one is under way on the taskbar's thread (DECISIONS 73).
+struct SubclassCall {
+    SubclassCall() { g_subclassDepth.fetch_add(1); }
+    ~SubclassCall() { g_subclassDepth.fetch_sub(1); }
+    SubclassCall(const SubclassCall&) = delete;
+    SubclassCall& operator=(const SubclassCall&) = delete;
+};
+
 LRESULT CALLBACK ShellTrayWndSubclassProc(HWND hWnd,
                                           UINT msg,
                                           WPARAM wParam,
                                           LPARAM lParam,
                                           DWORD_PTR) {
+    const SubclassCall call;
+
     if (msg == GetReplayMessage()) {
         // Only a wake-up: what to hand Explorer is read from the icon store,
-        // and wParam and lParam mean nothing (DECISIONS 58, 66).
-        SettleShellIcons([hWnd](HWND senderWnd, const std::vector<BYTE>& record) {
+        // and wParam and lParam mean nothing (DECISIONS 58, 66). While the
+        // mod unloads, it is the hand-back (DECISIONS 68).
+        OnShellTrayWake([hWnd](HWND senderWnd, const std::vector<BYTE>& record) {
             // The shell copies an icon's picture while it handles the message -
             // which is why an application may destroy its own straight after
             // Shell_NotifyIcon returns - so the delivery's copy can go after.
             return DeliverToShell(hWnd, senderWnd, record);
         });
+        // Once every icon is back, the subclass takes itself off, here: from
+        // the unloading thread that is a message this thread has to answer,
+        // and one that did not answer held unloading for as long as it did
+        // not (DECISIONS 73). On this thread it is a direct call.
+        if (g_handedBack.load()) {
+            WindhawkUtils::RemoveWindowSubclassFromAnyThread(hWnd, ShellTrayWndSubclassProc);
+        }
         return 0;
     }
 
@@ -4011,7 +4388,9 @@ LRESULT CALLBACK ShellTrayWndSubclassProc(HWND hWnd,
     }
 #endif
 
-    if (msg != WM_COPYDATA || g_unloading.load()) {
+    // Kept track of until every icon is back with Explorer, unloading or not
+    // (DECISIONS 68).
+    if (msg != WM_COPYDATA || g_handedBack.load()) {
         return DefSubclassProc(hWnd, msg, wParam, lParam);
     }
 
@@ -4078,13 +4457,24 @@ LRESULT CALLBACK ShellTrayWndSubclassProc(HWND hWnd,
         // marshalled across.
         SplitTrayXaml::OnIconStoreChanged();
 #endif
+    } else if (n.message == NIM_ADD || n.message == NIM_DELETE) {
+        // An icon of the main tray's coming or going repaints none of the
+        // mod's trays, but the arrange window lists it (DECISIONS 75).
+        NotifyTrayWindow(WM_ST_REFRESH);
     }
 
     if (forwardToShell) {
         const LRESULT answer = DefSubclassProc(hWnd, msg, wParam, lParam);
         if (recordShellAnswer) {
-            std::lock_guard<std::mutex> lock(g_mutex);
-            RecordShellAnswerLocked(n, answer != FALSE);
+            bool ask;
+            {
+                std::lock_guard<std::mutex> lock(g_mutex);
+                ask = RecordShellAnswerLocked(n, answer != FALSE);
+            }
+            // Posted, so it is handled once the messages waiting now are.
+            if (ask) {
+                WakeReplayDelivery();
+            }
         }
         return answer;
     }
@@ -4137,7 +4527,16 @@ HWND FindShellTrayWindow() {
 
 // Returns true only when this call attached to a tray window the mod was not
 // already watching.
+//
+// Only once the tray thread is running (DECISIONS 69). Without it nothing
+// draws the mod's trays, and an icon swallowed into one is lost. Wh_ModInit
+// took the end of its wait for the thread as leave to attach, and a thread
+// that went on to fail left a subclass swallowing icons into trays nothing
+// drew; one still starting attaches from its own timer once it runs.
 bool SubclassShellTrayWindow() {
+    if (g_trayThreadState.load() != TrayThreadState::Running) {
+        return false;
+    }
     HWND hWnd = FindShellTrayWindow();
     if (!hWnd || g_shellTrayWnd.load() == hWnd) {
         return false;
@@ -6303,10 +6702,19 @@ wuxc::Border MakeChevron(EmbeddedTray const& tray) {
 // Rebuilding the tray
 // ---------------------------------------------------------------------------
 
-// Swaps a cell's picture and tooltip without replacing the cell.
+// Swaps a cell's picture and tooltip without replacing the cell. A picture
+// taken away is taken away; one that could not be copied is left as it is
+// (CellPictureOf, DECISIONS 76).
 void UpdateCellInPlace(EmbeddedTray const& tray, wuxc::Border const& cell,
-                       HICON icon, std::wstring const& tip) {
-    if (icon) {
+                       SplitTray::CellSnapshot const& entry) {
+    const HICON icon = entry.icon.get();
+    const std::wstring& tip = entry.tip;
+    const SplitTray::CellPicture picture = SplitTray::CellPictureOf(entry);
+    if (picture == SplitTray::CellPicture::Clear) {
+        if (cell.Child()) {
+            cell.Child(nullptr);
+        }
+    } else if (picture == SplitTray::CellPicture::Replace) {
         if (auto bitmap = IconToBitmap(icon)) {
             if (auto image = cell.Child().try_as<wuxc::Image>()) {
                 image.Source(bitmap);
@@ -6423,8 +6831,7 @@ void RefreshTray(EmbeddedTray& tray) {
                 auto cell = children.GetAt(chevronSlots + static_cast<uint32_t>(n))
                                 .try_as<wuxc::Border>();
                 if (cell) {
-                    UpdateCellInPlace(tray, cell, entries[shown[n]].icon.get(),
-                                      entries[shown[n]].tip);
+                    UpdateCellInPlace(tray, cell, entries[shown[n]]);
                 }
             }
             return;
@@ -6891,6 +7298,9 @@ BOOL Wh_ModInit() {
     // leave every hook path silently disabled.
     g_unloading.store(false);
     g_trayThreadStuck = false;
+    g_handedBack.store(false);
+    g_handBackStuck = false;
+    g_panelsStuck = false;
 
     {
         std::lock_guard<std::mutex> lock(g_mutex);
@@ -6952,7 +7362,11 @@ BOOL Wh_ModInit() {
         return FALSE;
     }
 
-    if (!SubclassShellTrayWindow()) {
+    if (g_trayThreadState.load() != TrayThreadState::Running) {
+        // Slower than the wait. It attaches from its own timer once it runs,
+        // and if it gives up instead nothing was attached (DECISIONS 69).
+        Wh_Log(L"the tray thread is still starting; Split Tray attaches once it runs");
+    } else if (!SubclassShellTrayWindow()) {
         // Not fatal: the taskbar may still be starting up. The tray thread's timer
         // retries until it appears.
         Wh_Log(L"Shell_TrayWnd not found yet, will retry");
@@ -6996,14 +7410,39 @@ void Wh_ModSettingsChanged() {
     }
 }
 
+// Sends `message` to the taskbar's thread and waits for it until `deadline`.
+// Returns whether it was answered in time (DECISIONS 73).
+//
+// One that was not is posted as well, to be handled once the thread gets to it:
+// a sent message that times out before it is handled is dropped, as the tests
+// found - the hand-back never came, and the subclass went on swallowing icons
+// into trays nothing drew. It is handled by the mod's code, so the module then
+// has to stay loaded. The messages sent this way carry nothing, and one handled
+// twice - begun as it was sent, and again as posted - does nothing the second
+// time.
+bool SendToTaskbarBy(HWND taskbar, UINT message, ULONGLONG deadline) {
+    const ULONGLONG now = GetTickCount64();
+    const DWORD wait = deadline > now ? static_cast<DWORD>(deadline - now) : 0;
+    DWORD_PTR result = 0;
+    if (SendMessageTimeoutW(taskbar, message, 0, 0, SMTO_NORMAL, wait, &result) != 0 ||
+        !IsWindow(taskbar)) {
+        return true;
+    }
+    PostMessageW(taskbar, message, 0, 0);
+    return false;
+}
+
 // Takes the mod's panels out of the taskbars, on the taskbar's own thread:
-// XAML objects belong to it (DECISIONS 37).
-void RemoveEmbeddedTrays() {
+// XAML objects belong to it (DECISIONS 37). Returns false if that thread did
+// not answer in time (DECISIONS 73).
+bool RemoveEmbeddedTrays() {
 #ifndef SPLITTRAY_NO_XAML
     if (HWND taskbar = g_shellTrayWnd.load(); taskbar && IsWindow(taskbar)) {
-        SendMessageW(taskbar, GetXamlRemoveMessage(), 0, 0);
+        return SendToTaskbarBy(taskbar, GetXamlRemoveMessage(),
+                               GetTickCount64() + g_taskbarWaitMs);
     }
 #endif
+    return true;
 }
 
 // Stops the tray thread and waits for it to end (DECISIONS 59).
@@ -7038,63 +7477,89 @@ bool StopTrayThread() {
     return true;
 }
 
+// Hands every icon back to Explorer (DECISIONS 68), and waits until the mod's
+// code has left the taskbar's thread (DECISIONS 73). The hand-back runs on that
+// thread (HandIconsBackToShell), which then takes the subclass off itself. It
+// can arrive inside a round of settling there - Explorer may run a message
+// loop while it handles a record - and is then done once that round is over;
+// and a call of the subclass may still be under way below it, an application's
+// message Explorer was handling when it ran the loop. Returns false if the
+// thread was not done in time, not answering or still in the mod's code.
+//
+// Nothing here waits longer than the budget. The hand-back was asked for with
+// SendMessageW, before the wait began, and taking the subclass off from here
+// is a message that thread has to answer too, so a taskbar thread that did not
+// answer held unloading for as long as it did not. One that was not done in
+// time does all of it once it answers, with the module kept loaded for it.
+bool HandBackToShell() {
+    HWND shellTrayWnd = g_shellTrayWnd.load();
+    bool done = true;
+    if (shellTrayWnd && IsWindow(shellTrayWnd)) {
+        const ULONGLONG deadline = GetTickCount64() + g_taskbarWaitMs;
+        SendToTaskbarBy(shellTrayWnd, GetReplayMessage(), deadline);
+        auto left = [shellTrayWnd] {
+            return g_subclassDepth.load() == 0 &&
+                   (g_handedBack.load() || !IsWindow(shellTrayWnd));
+        };
+        while (!left() && GetTickCount64() < deadline) {
+            Sleep(10);
+        }
+        // With no call of the subclass under way and none to come, what is
+        // left of the last is its return; a message answered after it finds
+        // the thread out of the mod's code.
+        done = left() && SendToTaskbarBy(shellTrayWnd, WM_NULL, deadline);
+    }
+    g_shellTrayWnd.store(nullptr);
+    return done;
+}
+
+// Everything unloading does before the store can go: the mod's panels out of
+// the taskbars, its thread stopped, and every icon handed back to Explorer.
+// The subclass keeps track of icons until that last step (DECISIONS 68).
+void PrepareToUnload() {
+    g_unloading.store(true);
+    g_panelsStuck = !RemoveEmbeddedTrays();
+    g_trayThreadStuck = !StopTrayThread();
+    g_handBackStuck = !HandBackToShell();
+}
+
 // Before Windhawk takes the mod's hooks out (DECISIONS 67). The tray thread
 // installs hooks of its own as the taskbar's modules appear
 // (EnsureTaskbarXamlHooked), so it is stopped here, while they are all still
 // in place, rather than left to install one after they have gone.
 void Wh_ModBeforeUninit() {
-    g_unloading.store(true);
-    RemoveEmbeddedTrays();
-    g_trayThreadStuck = !StopTrayThread();
+    PrepareToUnload();
 }
 
 void Wh_ModUninit() {
     Wh_Log(L"Split Tray unloading");
-    g_unloading.store(true);
 
     // Done already, by a Windhawk that calls Wh_ModBeforeUninit.
-    if (g_trayThread && !g_trayThreadStuck) {
-        RemoveEmbeddedTrays();
-        g_trayThreadStuck = !StopTrayThread();
+    if (!g_unloading.load()) {
+        PrepareToUnload();
     }
 
-    HWND shellTrayWnd = g_shellTrayWnd.load();
-    if (shellTrayWnd && IsWindow(shellTrayWnd)) {
-        // Every icon goes back to Explorer before the mod stops watching;
-        // otherwise unloading would make the ones in its trays disappear
-        // entirely. Settled at once, on the taskbar's thread, together with
-        // any move still waiting: sent, not posted.
-        {
-            std::lock_guard<std::mutex> lock(g_mutex);
-            for (auto* list : {&g_icons, &g_primaryOnly}) {
-                for (auto& icon : *list) {
-                    // An icon whose application has gone is left as it is.
-                    icon.shellTarget =
-                        IsWindow(icon.ownerWnd) ? true : icon.forwardedToShell;
-                    icon.shellRefusals = 0;
-                }
-            }
-        }
-        SendMessageW(shellTrayWnd, GetReplayMessage(), 0, 0);
-        WindhawkUtils::RemoveWindowSubclassFromAnyThread(shellTrayWnd,
-                                                         ShellTrayWndSubclassProc);
-    }
-    g_shellTrayWnd.store(nullptr);
-
-    if (g_trayThreadStuck) {
-        // Its windows are still up and it is still running the mod's code.
-        // Keeping the module loaded until Explorer exits is a leak; unloading
-        // it under a running thread would take Explorer down with it.
+    if (g_trayThreadStuck || g_handBackStuck || g_panelsStuck) {
+        // The mod's code is still running, or will: the tray thread, or on the
+        // taskbar's thread a round of settling with the hand-back after it, or
+        // a message sent there that it has not answered yet. Keeping the
+        // module loaded until Explorer exits is a leak; unloading it under
+        // running code would take Explorer down with it. The store is left as
+        // it is, for that code.
+        const wchar_t* what =
+            g_trayThreadStuck ? L"the tray thread did not stop"
+            : g_panelsStuck   ? L"the taskbar did not take the mod's trays out in time"
+                              : L"the icons were not all back with Explorer in time";
         HMODULE self = nullptr;
         if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                                    GET_MODULE_HANDLE_EX_FLAG_PIN,
                                reinterpret_cast<LPCWSTR>(&StopTrayThread), &self)) {
-            Wh_Log(L"the tray thread did not stop; the mod stays loaded until "
-                   L"Explorer exits rather than unload code it is still running");
+            Wh_Log(L"%s; the mod stays loaded until Explorer exits rather than "
+                   L"unload code it is still running",
+                   what);
         } else {
-            Wh_Log(L"the tray thread did not stop, and the mod could not keep "
-                   L"itself loaded: %lu",
-                   GetLastError());
+            const DWORD error = GetLastError();
+            Wh_Log(L"%s, and the mod could not keep itself loaded: %lu", what, error);
         }
         return;
     }

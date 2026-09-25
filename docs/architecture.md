@@ -164,6 +164,29 @@ what to do (DECISIONS 58, 66):
   A real refusal is asked again on the next ticks, three times in all, and the
   icon is then left to its application. Its own adds and modifies go to
   Explorer, as they would with no mod, and Explorer's answers are recorded.
+* **An application's own messages are recorded the same way** (DECISIONS 70).
+  Whatever Explorer answers an add or modify passed on to it says whether it
+  has the icon. An add it refused says nothing yet, since Explorer refuses to
+  add an icon it has: every application's add, when the mod is loaded into a
+  running Explorer. The taskbar's next round asks, with the same icon as a
+  modify: posted, so after the messages waiting then, which is the burst in
+  which Tauri applications lose icons if the tray keeps them waiting
+  (DECISIONS 51). An icon Explorer does not have is left to its application,
+  which has been told, rather than handed over by the mod: its record may be
+  made of modifies alone.
+* **Explorer is kept up to date with the whole icon** (DECISIONS 71). Explorer
+  may send messages of its own while it handles a record, and they come back
+  through the subclass. What an application sends then is swallowed, since
+  Explorer does not have the icon yet, and a version Explorer does not take is
+  not its version. Either way the icon is marked as behind (`shellBehind`,
+  found by a count of its changes), and the next round hands Explorer the whole
+  record again as a modify, with the version after it: three times at most.
+  A round is never started inside another: a wake-up dispatched from inside one
+  is left to it, or to the next.
+* **An add never carries a picture the mod does not own** (DECISIONS 72). When
+  the mod's own copy cannot be copied again for Explorer, the add goes without
+  a picture, not with the handle the application sent long ago. A picture the
+  store cannot copy when it arrives leaves the one before.
 
 ## Drawing the trays
 
@@ -197,7 +220,11 @@ The panel's contents:
 * **The chevron.** Icons past the limit go behind it, into a popup of their own
   (DECISIONS 45, 48).
 * **Updating in place.** A cell is updated rather than rebuilt when only its
-  picture or tooltip changes (DECISIONS 46).
+  picture or tooltip changes (DECISIONS 46). A picture the application took
+  away is taken off the cell; one that could not be copied for this refresh is
+  left as it is, since the store still has it (DECISIONS 76).
+* **Tooltips.** A cell has its icon's tooltip only while "Show tooltips" is on
+  (DECISIONS 77).
 
 Every cell carries its icon's **serial number**, and everything the cell does
 (clicks, menus, reordering) finds the icon by that number. It is unique for as
@@ -214,7 +241,8 @@ display:
 * a display tray on a display that has no taskbar.
 
 An empty tray still shows one cell, a handle, so there is always somewhere to
-click for the mod's menu.
+click for the mod's menu. Its tooltip window is made or removed as "Show
+tooltips" is switched, not only when the tray's window is made (DECISIONS 77).
 
 ## Clicks, menus and questions
 
@@ -222,13 +250,18 @@ click for the mod's menu.
   tray callback protocol (`TrayCallbacksFor`). That is `(uID, message)` for
   version 0 to 3 icons, and the anchor point plus `(message, uID)` for
   version 4. From version 3, a left button-up is followed by `NIN_SELECT` and a
-  right one by `WM_CONTEXTMENU`, as Explorer does (DECISIONS 62). The owner is
-  first allowed to take the foreground, so its menu can open.
+  right one by `WM_CONTEXTMENU`, as Explorer does (DECISIONS 62). The version
+  is the one the icon's present registration asked for: an add that is taken
+  starts it at 0 (DECISIONS 74). The owner is first allowed to take the
+  foreground, so its menu can open.
 * **Menus.** Plain right-click belongs to the application. Shift+right-click
   opens Split Tray's own menu (DECISIONS 30), and so does any click on an empty
   tray's handle.
 * **Arrange window.** A window of the mod's own with a list per tray, where
   icons are moved by dragging or by pressing a tray's number (DECISIONS 40).
+  While it is open it follows which icons there are, their tray and their
+  overflow, keeping what is selected and waiting for a drag to end; changes
+  of picture or tooltip do not fill it again (DECISIONS 75).
 * **Where is my icon?** Explorer cannot answer `Shell_NotifyIconGetRect` for an
   icon it does not have, and Tauri applications ignore every click on an icon
   whose position they cannot get. So the mod answers that question itself for
@@ -259,9 +292,12 @@ and frequent events are not logged (DECISIONS 44, 51).
 * **Attaching.** The tray thread is started first, and the mod attaches only
   once it is running. If it cannot start, `Wh_ModInit` fails with nothing
   attached, rather than leave icons going to trays nothing draws
-  (DECISIONS 67). Windhawk loads the mod before Explorer has created its
-  taskbar, so attaching to `Shell_TrayWnd` is retried on the timer, never
-  attempted just once (DECISIONS 18).
+  (DECISIONS 67). One slower than `Wh_ModInit`'s wait attaches from its own
+  timer once it runs; the end of the wait is not leave to attach, so one that
+  gives up afterwards leaves nothing attached (DECISIONS 69). Windhawk loads
+  the mod before Explorer has created its taskbar, so attaching to
+  `Shell_TrayWnd` is retried on the timer, never attempted just once
+  (DECISIONS 18).
 * **Collecting existing icons.** Icons that exist before the mod is watching are
   collected by asking applications to re-register: the `TaskbarCreated`
   broadcast that Explorer itself sends after a restart. The mod sends it only
@@ -273,17 +309,41 @@ and frequent events are not logged (DECISIONS 44, 51).
   the mod has never seen added is answered with failure, as Explorer answers
   one for an icon it does not have, so its application adds it again, whole
   (DECISIONS 64).
-* **Unloading.** In order (DECISIONS 59, 67):
-  1. In `Wh_ModBeforeUninit`, while the hooks are still in place, the mod takes
-     its panels out of the taskbars on Explorer's thread.
+* **Unloading.** All in `Wh_ModBeforeUninit`, while the hooks are still in
+  place, and in order (DECISIONS 59, 67, 68, 73):
+  1. The mod takes its panels out of the taskbars on Explorer's thread.
   2. It stops the tray thread and waits for it to end. That thread installs
      hooks of its own, and must not be doing so while Windhawk removes them.
      Its window classes belong to the mod's own module, and it unregisters all
      of them as it ends: Windows keeps a class after the module that registered
      it has gone, pointing at a window procedure that is no longer there.
-  3. In `Wh_ModUninit`, it asks for every icon to be in Explorer's tray, and
-     settles that at once on the taskbar's thread, with any move still waiting.
-  4. It removes its subclass.
+  3. It hands every icon back to Explorer, on the taskbar's thread, as the
+     icon is by then (`HandIconsBackToShell`). Until this step the subclass
+     keeps track of what applications send, unloading or not: an icon removed
+     while the thread was stopping used to be put back by the hand-back. What
+     arrives while the hand-back runs is handed back by another round. In the
+     same step the subclass stops keeping track and passes everything on.
+     Only icons the mod took away are handed back: one Explorer refused its
+     own application stays with that application.
+  4. The subclass takes itself off, on the taskbar's thread, in the call that
+     finished the hand-back. From the unloading thread that would be one more
+     message the taskbar's thread has to answer.
+  5. Unloading waits until no call of the subclass is under way on that thread
+     (`g_subclassDepth`), and for one more message to be answered there.
+     Explorer may run a message loop inside a message the subclass passed on,
+     a menu say, and the hand-back is then done inside it, with the subclass
+     still below.
 
-  If the tray thread does not end in time, the mod keeps its module loaded
-  until Explorer exits, rather than unload code that thread is still running.
+  `Wh_ModUninit` then releases the store. A Windhawk that does not call
+  `Wh_ModBeforeUninit` gets all of it from `Wh_ModUninit`. The hand-back can
+  arrive inside a round of settling, if Explorer runs a message loop while it
+  handles a record, and it is then done once that round is over.
+
+  Nothing waits longer than its budget (`g_taskbarWaitMs`, five seconds a
+  step). The messages to the taskbar's thread are sent with a time limit
+  (`SendToTaskbarBy`), and one not answered in time is posted as well: a sent
+  message that times out before it is handled is dropped. If the tray thread
+  does not end in time, or the taskbar's thread has not done its part in time,
+  the mod keeps its module loaded until Explorer exits rather than unload code
+  that is running or still to run. The subclass then takes itself off once the
+  taskbar's thread gets to the hand-back.

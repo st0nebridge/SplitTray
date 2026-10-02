@@ -1,0 +1,13 @@
+# Build output (tools/build.ps1)
+/build/
+
+# Editor / tooling scratch
+.VSCodeCounter/
+__pycache__/
+
+# Compiler artefacts
+*.o
+*.obj
+*.exe
+*.dll
+*.a

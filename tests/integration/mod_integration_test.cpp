@@ -1,0 +1,2381 @@
+// ============================================================================
+// Module:  tests/integration/mod_integration_test.cpp
+// Purpose: Drive the whole mod end to end with the real shell32 producing the
+//          messages, in an isolated process, with no risk to the live shell.
+//
+//          The unit tests in tests/regression cover the pure logic. This covers
+//          the part that cannot be unit tested: that subclassing Shell_TrayWnd
+//          actually intercepts what applications send, that suppression removes
+//          an icon from the shell, that the secondary tray window really appears
+//          with the right geometry, that a click on it reaches the owning
+//          application, and that unloading puts swallowed icons back.
+//
+// How it stays isolated
+//          The test creates a private desktop and puts its own window of class
+//          Shell_TrayWnd on it, so FindWindowW inside both shell32 and the mod
+//          resolves to the test's window rather than Explorer's. Everything -
+//          the fake shell, the mod's tray window, the icon owner - lives on that
+//          desktop and is destroyed with it. The user's own tray is untouched.
+//
+// Build/run: tools/build.ps1 (or tools/run-tests.ps1)
+// ============================================================================
+
+#include <windows.h>
+#include <shellapi.h>
+
+#include <cstdio>
+#include <map>
+#include <set>
+#include <string>
+#include <utility>
+
+#include "../../src/split-tray.wh.cpp"
+
+using namespace SplitTray;
+
+namespace {
+
+int g_failures = 0;
+int g_checks = 0;
+
+void Check(bool condition, const char* expression, int line) {
+    g_checks++;
+    if (!condition) {
+        g_failures++;
+        printf("  FAIL  line %d: %s\n", line, expression);
+    }
+}
+
+#define CHECK(expr) Check((expr), #expr, __LINE__)
+#define CHECK_EQ(a, b)                                                       \
+    do {                                                                    \
+        auto a_ = (a);                                                      \
+        auto b_ = (b);                                                      \
+        g_checks++;                                                         \
+        if (!(a_ == b_)) {                                                  \
+            g_failures++;                                                   \
+            printf("  FAIL  line %d: %s == %s (got %lld, want %lld)\n",     \
+                   __LINE__, #a, #b, static_cast<long long>(a_),            \
+                   static_cast<long long>(b_));                             \
+        }                                                                   \
+    } while (0)
+
+// --- The stand-in for Explorer ---------------------------------------------
+
+// What the "shell" actually received, i.e. what the mod chose to forward.
+struct ShellObservations {
+    int adds = 0;
+    int modifies = 0;
+    int deletes = 0;
+    int setVersions = 0;
+    UINT lastUID = 0;
+    std::wstring lastTip;
+
+    // The last NIM_ADD in full, since an add is what recreates an icon: every
+    // field it leaves out is a field the shell does not have.
+    UINT addFlags = 0;
+    UINT addCallback = 0;
+    std::wstring addTip;
+    std::wstring addExePath;
+    bool addIconAlive = false;  // checked on arrival, before anything is freed
+    UINT lastVersion = 0;
+
+    // Balloons taken, the last one's text, and whether its icon was held
+    // hidden then (DECISIONS 78).
+    int balloons = 0;
+    std::wstring lastBalloon;
+    bool lastBalloonHidden = false;
+
+    void Reset() { *this = ShellObservations(); }
+};
+
+// Whether a handle is a live icon at this moment.
+bool IconIsAlive(HICON icon) {
+    ICONINFO info = {};
+    if (!icon || !GetIconInfo(icon, &info)) {
+        return false;
+    }
+    if (info.hbmColor) {
+        DeleteObject(info.hbmColor);
+    }
+    if (info.hbmMask) {
+        DeleteObject(info.hbmMask);
+    }
+    return true;
+}
+
+ShellObservations g_shell;
+HWND g_fakeShellWnd = nullptr;
+HWND g_iconOwnerWnd = nullptr;
+
+// The icons the stand-in shell holds, by owner and uID, so it can answer
+// Shell_NotifyIconGetRect the way Explorer does: for its own icons only.
+std::set<std::pair<HWND, UINT>> g_shellHeld;
+
+// The tooltip of each icon it holds, as its adds and modifies left it.
+std::map<std::pair<HWND, UINT>, std::wstring> g_shellTips;
+
+// The icons it holds hidden (NIS_HIDDEN).
+std::set<std::pair<HWND, UINT>> g_shellHidden;
+
+// What it took, in order: "add 113 hidden", "version 113", "modify 113 hidden
+// balloon", "delete 113".
+std::vector<std::string> g_shellEvents;
+
+std::string ShellEvents() {
+    std::string joined;
+    for (const std::string& event : g_shellEvents) {
+        joined += (joined.empty() ? "" : ", ") + event;
+    }
+    return joined;
+}
+
+// Where the stand-in shell says its icons are.
+constexpr RECT kShellIconRect = {1500, 1040, 1524, 1080};
+
+// Set to make the stand-in refuse every add, the way Explorer refuses one it
+// will not take for its own reasons.
+bool g_shellRefusesAdds = false;
+
+// Shell_NotifyIconGetRect's question, decoded with the offsets the wire probe
+// captured (tests/probe/probe-rect-output-26100.txt) rather than the mod's own
+// parser, so the stand-in does not agree with the mod by construction:
+// dwData 3, 40 bytes, 0x04 = 1 for the position or 2 for the size, 0x10 the
+// owner window, 0x14 the uID. The answer is packed like a mouse position, and
+// a size of 0 means the icon was not found.
+LRESULT AnswerIconRectQuery(const COPYDATASTRUCT* cds) {
+    if (!cds || cds->dwData != 3 || cds->cbData < 0x18 || !cds->lpData) {
+        return 0;
+    }
+    const BYTE* data = static_cast<const BYTE*>(cds->lpData);
+    DWORD part = 0;
+    DWORD owner = 0;
+    UINT uID = 0;
+    memcpy(&part, data + 0x04, sizeof(part));
+    memcpy(&owner, data + 0x10, sizeof(owner));
+    memcpy(&uID, data + 0x14, sizeof(uID));
+    const HWND ownerWnd = reinterpret_cast<HWND>(static_cast<ULONG_PTR>(owner));
+    if (!g_shellHeld.count({ownerWnd, uID})) {
+        return 0;
+    }
+    const RECT& r = kShellIconRect;
+    if (part == 2) {
+        return MAKELONG(r.right - r.left, r.bottom - r.top);
+    }
+    return MAKELONG(static_cast<WORD>(r.left), static_cast<WORD>(r.top));
+}
+
+// Asks where an icon is, the way Tauri's tray library does before it handles
+// any click on it.
+HRESULT AskWhereIconIs(UINT uID, RECT* rect) {
+    NOTIFYICONIDENTIFIER id = {};
+    id.cbSize = sizeof(id);
+    id.hWnd = g_iconOwnerWnd;
+    id.uID = uID;
+    *rect = RECT{};
+    return Shell_NotifyIconGetRect(&id, rect);
+}
+
+// Set when the icon owner receives its tray callback, which is how the click
+// forwarding path is verified.
+volatile LONG g_ownerClicks = 0;
+volatile LONG g_ownerLastMouseMessage = 0;
+constexpr UINT kOwnerCallbackMessage = WM_APP + 0x777;
+
+// Every callback the owner received, in order: the message in the low word of
+// lParam, which is where both protocol versions put it. The owner's window is
+// on this thread, so only this thread touches it.
+std::vector<UINT> g_ownerMessages;
+
+LRESULT CALLBACK FakeShellProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_COPYDATA) {
+        auto* cds = reinterpret_cast<const COPYDATASTRUCT*>(lParam);
+        if (cds && cds->dwData == 3) {
+            return AnswerIconRectQuery(cds);
+        }
+        TrayNotification n;
+        if (cds && ParseTrayNotification(cds->dwData, cds->lpData, cds->cbData, &n)) {
+            // Answered as Explorer answers: an add fails for an icon it has
+            // already, and anything else fails for one it does not have. It
+            // used to take everything, which could not tell the mod apart from
+            // one that records a refusal as success.
+            const std::pair<HWND, UINT> id = {n.ownerWnd, n.uID};
+            const bool held = g_shellHeld.count(id) != 0;
+            LRESULT answer = TRUE;
+            if (n.message == NIM_ADD) {
+                if (held || g_shellRefusesAdds) {
+                    answer = FALSE;
+                } else {
+                    g_shellHeld.insert(id);
+                }
+            } else if (n.message == NIM_MODIFY || n.message == NIM_DELETE ||
+                       n.message == NIM_SETVERSION) {
+                if (!held) {
+                    answer = FALSE;
+                } else if (n.message == NIM_DELETE) {
+                    g_shellHeld.erase(id);
+                    g_shellTips.erase(id);
+                    g_shellHidden.erase(id);
+                }
+            }
+            const bool addOrModify = n.message == NIM_ADD || n.message == NIM_MODIFY;
+            if (answer && (n.flags & NIF_TIP) && addOrModify) {
+                g_shellTips[id] = n.tip;
+            }
+            if (answer && addOrModify && (n.flags & NIF_STATE) &&
+                (n.stateMask & NIS_HIDDEN)) {
+                if (n.state & NIS_HIDDEN) {
+                    g_shellHidden.insert(id);
+                } else {
+                    g_shellHidden.erase(id);
+                }
+            }
+            const bool balloon = answer && addOrModify && (n.flags & NIF_INFO);
+            if (balloon) {
+                g_shell.balloons++;
+                g_shell.lastBalloon = ReadFixedString(static_cast<const BYTE*>(cds->lpData),
+                                                      wire::kInfo, wire::kInfoChars);
+                g_shell.lastBalloonHidden = g_shellHidden.count(id) != 0;
+            }
+            if (answer) {
+                const char* verb = n.message == NIM_ADD      ? "add"
+                                   : n.message == NIM_MODIFY ? "modify"
+                                   : n.message == NIM_DELETE ? "delete"
+                                                             : "version";
+                std::string event = std::string(verb) + " " + std::to_string(n.uID);
+                if (addOrModify && g_shellHidden.count(id)) {
+                    event += " hidden";
+                }
+                if (balloon) {
+                    event += " balloon";
+                }
+                g_shellEvents.push_back(event);
+            }
+            switch (n.message) {
+                case NIM_ADD:
+                    g_shell.adds++;
+                    g_shell.addFlags = n.flags;
+                    g_shell.addCallback = n.callbackMessage;
+                    g_shell.addTip = (n.flags & NIF_TIP) ? n.tip : L"";
+                    g_shell.addExePath = n.exePath;
+                    g_shell.addIconAlive = (n.flags & NIF_ICON) && IconIsAlive(n.icon);
+                    break;
+                case NIM_MODIFY: g_shell.modifies++; break;
+                case NIM_DELETE: g_shell.deletes++; break;
+                case NIM_SETVERSION:
+                    g_shell.setVersions++;
+                    g_shell.lastVersion = n.version;
+                    break;
+                default: break;
+            }
+            g_shell.lastUID = n.uID;
+            if (n.flags & NIF_TIP) {
+                g_shell.lastTip = n.tip;
+            }
+            return answer;
+        }
+        return TRUE;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+LRESULT CALLBACK IconOwnerProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == kOwnerCallbackMessage) {
+        InterlockedIncrement(&g_ownerClicks);
+        // Version 0 protocol: wParam is the uID, lParam the mouse message.
+        InterlockedExchange(&g_ownerLastMouseMessage, static_cast<LONG>(lParam));
+        g_ownerMessages.push_back(LOWORD(lParam));
+        return 0;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+// --- Pumping -------------------------------------------------------------
+
+void Pump() {
+    MSG msg;
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+}
+
+// Pumps until `predicate` holds or the budget runs out. Returns whether it held.
+template <typename Predicate>
+bool PumpUntil(Predicate predicate, DWORD timeoutMs = 3000) {
+    const ULONGLONG deadline = GetTickCount64() + timeoutMs;
+    for (;;) {
+        Pump();
+        if (predicate()) {
+            return true;
+        }
+        if (GetTickCount64() >= deadline) {
+            return false;
+        }
+        Sleep(15);
+    }
+}
+
+// Waits for what was asked of the mod's own thread to have been done. That
+// thread handles posted requests - a refresh, a settle, a callback to an
+// icon's owner - in its own time, so a starting count, or a check that nothing
+// happened, taken while one is still waiting reads a state about to change;
+// and a check for a step's effect can be met by a request an earlier step
+// posted. Measured: four races of this kind in Split Tray's tests in three
+// days; one here passed for the wrong reason and was caught only by the
+// mutation check (DECISIONS 84). The thread takes milliseconds for each; a
+// second leaves room on a loaded machine.
+void SettleModThread() {
+    Pump();
+    Sleep(1000);
+    Pump();
+}
+
+// --- Helpers over the mod's state ----------------------------------------
+
+size_t MirroredCount() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_icons.size();
+}
+
+size_t TrackedPrimaryCount() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_primaryOnly.size();
+}
+
+std::wstring MirroredTip(size_t index) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return index < g_icons.size() ? g_icons[index].tip : L"";
+}
+
+bool MirroredHasIcon(size_t index) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return index < g_icons.size() && g_icons[index].icon != nullptr;
+}
+
+// Where the icon with this uID is drawn in tray `number`, counting that tray's
+// cells from the first; -1 if that tray does not show it.
+int IndexInTray(int number, UINT uID) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const auto inTray = IconsInTrayLocked(number);
+    for (size_t i = 0; i < inTray.size(); i++) {
+        const auto& icon = g_icons[inTray[i]];
+        if (icon.ownerWnd == g_iconOwnerWnd && icon.uID == uID) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+// Whether the mod has recorded the icon with this uID as Explorer's.
+bool RecordedAsShells(UINT uID) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    for (auto* list : {&g_icons, &g_primaryOnly}) {
+        for (const auto& icon : *list) {
+            if (icon.ownerWnd == g_iconOwnerWnd && icon.uID == uID) {
+                return icon.forwardedToShell;
+            }
+        }
+    }
+    return false;
+}
+
+HWND FloatingWindowOf(int number) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto found = g_floatingWnds.find(number);
+    return found == g_floatingWnds.end() ? nullptr : found->second;
+}
+
+TrayLayout FloatingLayoutOf(int number) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto found = g_floatingLayouts.find(number);
+    return found == g_floatingLayouts.end() ? TrayLayout{} : found->second;
+}
+
+TrayTarget TrayNumbered(int number) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const TrayTarget* tray = FindTrayLocked(number);
+    return tray ? *tray : TrayTarget{};
+}
+
+int LastTrayNumber() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_trays.empty() ? 0 : g_trays.back().number;
+}
+
+bool WindowIsAt(HWND wnd, const TrayLayout& layout) {
+    RECT rect = {};
+    return wnd && GetWindowRect(wnd, &rect) && rect.left == layout.x &&
+           rect.top == layout.y && rect.right - rect.left == layout.width &&
+           rect.bottom - rect.top == layout.height;
+}
+
+// Whether the mod has logged a line containing `text` since `from` lines in.
+bool LoggedSince(size_t from, const wchar_t* text) {
+    const auto lines = SplitTrayTestHarness::LogSnapshot();
+    for (size_t i = from; i < lines.size(); i++) {
+        if (lines[i].find(text) != std::wstring::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+constexpr const wchar_t* kWouldAsk = L"would be asked to re-register";
+constexpr const wchar_t* kNotAsking = L"not asking applications to re-register";
+
+
+
+// Sends a real tray notification, exactly as any application would.
+BOOL SendTrayNotification(DWORD message, UINT uID, PCWSTR tip, UINT extraFlags = 0) {
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = g_iconOwnerWnd;
+    nid.uID = uID;
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | extraFlags;
+    nid.uCallbackMessage = kOwnerCallbackMessage;
+    nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    if (tip) {
+        wcsncpy(nid.szTip, tip, 127);
+    }
+    return Shell_NotifyIconW(message, &nid);
+}
+
+// A NIM_MODIFY carrying only what `flags` names, the way most applications
+// update a live icon: a new picture, or a new tooltip, never both at once.
+BOOL SendPartialModify(UINT uID, UINT flags, HICON icon, PCWSTR tip) {
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = g_iconOwnerWnd;
+    nid.uID = uID;
+    nid.uFlags = flags;
+    nid.hIcon = icon;
+    if (tip) {
+        wcsncpy(nid.szTip, tip, 127);
+    }
+    return Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+BOOL SendSetVersion(UINT uID, UINT version) {
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = g_iconOwnerWnd;
+    nid.uID = uID;
+    nid.uVersion = version;
+    return Shell_NotifyIconW(NIM_SETVERSION, &nid);
+}
+
+// A delete as applications send one: the icon's identity and no flags.
+BOOL SendBareDelete(UINT uID) {
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = g_iconOwnerWnd;
+    nid.uID = uID;
+    return Shell_NotifyIconW(NIM_DELETE, &nid);
+}
+
+// An application giving the keyboard focus back to its icon, as it does once
+// its menu closes.
+BOOL SendSetFocus(UINT uID) {
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = g_iconOwnerWnd;
+    nid.uID = uID;
+    return Shell_NotifyIconW(NIM_SETFOCUS, &nid);
+}
+
+// A balloon, as applications show one: a modify carrying NIF_INFO alone.
+BOOL SendBalloon(UINT uID, PCWSTR text) {
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = g_iconOwnerWnd;
+    nid.uID = uID;
+    nid.uFlags = NIF_INFO;
+    wcsncpy(nid.szInfo, text, 255);
+    wcsncpy(nid.szInfoTitle, L"Split Tray test", 63);
+    nid.dwInfoFlags = NIIF_INFO;
+    return Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+// An icon the test owns and may destroy, as an application's own icons are.
+HICON MakeOwnedIcon(LPCWSTR stock) {
+    return CopyIcon(LoadIconW(nullptr, stock));
+}
+
+// Whether floating tray `number` is laid out, and its window placed, for the
+// icons it holds now. The store changes on this thread at once; the layout and
+// the window follow on the mod's own thread, and a click computed in between
+// lands on the old grid.
+bool TrayLaidOutForItsIcons(int number) {
+    const TrayTarget tray = TrayNumbered(number);
+    TrayLayout expected;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        expected = ComputeLayout(tray.monitor.workArea,
+                                 static_cast<int>(IconsInTrayLocked(number).size()),
+                                 g_settings, tray.monitor.dpi, tray.corner);
+    }
+    const TrayLayout actual = FloatingLayoutOf(number);
+    return actual.columns == expected.columns && actual.width == expected.width &&
+           actual.height == expected.height &&
+           WindowIsAt(FloatingWindowOf(number), actual);
+}
+
+// Posts a click on the cell of icon `uID` in floating tray `number`.
+void ClickInTray(int number, UINT uID, UINT down, UINT up) {
+    const int index = IndexInTray(number, uID);
+    const TrayLayout layout = FloatingLayoutOf(number);
+    if (index < 0 || layout.columns <= 0) {
+        return;
+    }
+    const int column = index % layout.columns;
+    const int row = index / layout.columns;
+    const LPARAM point = MAKELPARAM(column * layout.cell + layout.cell / 2,
+                                    row * layout.cell + layout.cell / 2);
+    PostMessageW(FloatingWindowOf(number), down, 0, point);
+    PostMessageW(FloatingWindowOf(number), up, 0, point);
+}
+
+// Posts the pointer moving onto the cell of icon `uID` in floating tray
+// `number`, resting there, and leaving.
+void HoverInTray(int number, UINT uID) {
+    const int index = IndexInTray(number, uID);
+    const TrayLayout layout = FloatingLayoutOf(number);
+    if (index < 0 || layout.columns <= 0) {
+        return;
+    }
+    const LPARAM point =
+        MAKELPARAM((index % layout.columns) * layout.cell + layout.cell / 2,
+                   (index / layout.columns) * layout.cell + layout.cell / 2);
+    HWND wnd = FloatingWindowOf(number);
+    PostMessageW(wnd, WM_MOUSEMOVE, 0, point);
+    PostMessageW(wnd, WM_MOUSEHOVER, 0, point);
+    PostMessageW(wnd, WM_MOUSELEAVE, 0, 0);
+}
+
+// The uID and version of the icon at `index` in tray `number`, in the order
+// the tray draws them.
+std::pair<UINT, UINT> IconAtIndexInTray(int number, int index) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const auto indices = IconsInTrayLocked(number);
+    if (index < 0 || static_cast<size_t>(index) >= indices.size()) {
+        return {0, 0};
+    }
+    const MirroredIcon& icon = g_icons[indices[static_cast<size_t>(index)]];
+    return {icon.uID, icon.version};
+}
+
+// What a screen reader calls the icon at `index` in tray `number`.
+std::wstring LabelAtIndexInTray(int number, int index) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const auto indices = IconsInTrayLocked(number);
+    return index >= 0 && static_cast<size_t>(index) < indices.size()
+               ? IconLabel(g_icons[indices[static_cast<size_t>(index)]])
+               : std::wstring();
+}
+
+// What an application is sent for its icon selected from the keyboard: from
+// version 3 NIN_KEYSELECT, before it the clicks (DECISIONS 80).
+std::vector<UINT> KeyboardSelection(UINT version) {
+    if (version >= NOTIFYICON_VERSION) {
+        return {NIN_KEYSELECT};
+    }
+    return {WM_LBUTTONDOWN, WM_LBUTTONUP};
+}
+
+// UI Automation's client object, CUIAutomation. The header declares its class
+// id, but no import library defines it.
+constexpr CLSID kUIAutomationClass = {0xff48dba4, 0x60ef, 0x4201,
+                                      {0xaa, 0x87, 0x54, 0x10, 0x3e, 0xef, 0x59, 0x4e}};
+
+// The UI Automation element named `name` among `parent`'s children, held, or
+// null.
+IUIAutomationElement* ChildNamed(IUIAutomation* uia, IUIAutomationElement* parent,
+                                 const wchar_t* name) {
+    if (!uia || !parent) {
+        return nullptr;
+    }
+    VARIANT value;
+    VariantInit(&value);
+    value.vt = VT_BSTR;
+    value.bstrVal = SysAllocString(name);
+    IUIAutomationCondition* named = nullptr;
+    IUIAutomationElement* found = nullptr;
+    if (SUCCEEDED(uia->CreatePropertyCondition(UIA_NamePropertyId, value, &named))) {
+        parent->FindFirst(TreeScope_Children, named, &found);
+        named->Release();
+    }
+    VariantClear(&value);
+    return found;
+}
+
+// Whether a UI Automation client finds an element named `name` anywhere under
+// the window `root`, as a screen reader searching it would.
+bool UiaFindsNamed(HWND root, const wchar_t* name) {
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    bool found = false;
+    IUIAutomation* uia = nullptr;
+    IUIAutomationElement* top = nullptr;
+    if (SUCCEEDED(CoCreateInstance(kUIAutomationClass, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&uia))) &&
+        SUCCEEDED(uia->ElementFromHandle(root, &top)) && top) {
+        VARIANT value;
+        VariantInit(&value);
+        value.vt = VT_BSTR;
+        value.bstrVal = SysAllocString(name);
+        IUIAutomationCondition* named = nullptr;
+        IUIAutomationElement* element = nullptr;
+        if (SUCCEEDED(uia->CreatePropertyCondition(UIA_NamePropertyId, value, &named))) {
+            found = SUCCEEDED(top->FindFirst(TreeScope_Descendants, named, &element)) &&
+                    element;
+            named->Release();
+        }
+        if (element) {
+            element->Release();
+        }
+        VariantClear(&value);
+    }
+    if (top) {
+        top->Release();
+    }
+    if (uia) {
+        uia->Release();
+    }
+    if (SUCCEEDED(com)) {
+        CoUninitialize();
+    }
+    return found;
+}
+
+bool ElementHasFocus(IUIAutomationElement* element) {
+    BOOL focused = FALSE;
+    return element && SUCCEEDED(element->get_CurrentHasKeyboardFocus(&focused)) && focused;
+}
+
+// Whether the mod's thread has put the keyboard focus on `wnd`.
+bool TrayThreadFocusIs(HWND wnd) {
+    GUITHREADINFO info = {sizeof(info)};
+    return GetGUIThreadInfo(g_trayThreadId, &info) && info.hwndFocus == wnd;
+}
+
+// Selects the row of `list` with exactly this text; false if there is none.
+bool SelectRow(HWND list, const wchar_t* text) {
+    const int rows = static_cast<int>(SendMessageW(list, LVM_GETITEMCOUNT, 0, 0));
+    for (int i = 0; i < rows; i++) {
+        WCHAR row[256] = {};
+        ListView_GetItemText(list, i, 0, row, ARRAYSIZE(row));
+        if (wcscmp(row, text) == 0) {
+            ListView_SetItemState(list, i, LVIS_SELECTED | LVIS_FOCUSED,
+                                  LVIS_SELECTED | LVIS_FOCUSED);
+            return true;
+        }
+    }
+    return false;
+}
+
+// A key pressed in one of the arrange window's lists, as the list tells its
+// window.
+void KeyInArrangeList(HWND arrange, HWND list, WORD key) {
+    NMLVKEYDOWN down = {};
+    down.hdr.hwndFrom = list;
+    down.hdr.idFrom = static_cast<UINT_PTR>(GetDlgCtrlID(list));
+    down.hdr.code = LVN_KEYDOWN;
+    down.wVKey = key;
+    SendMessageW(arrange, WM_NOTIFY, down.hdr.idFrom, reinterpret_cast<LPARAM>(&down));
+}
+
+// Whether a list view has a row with exactly this text.
+bool ListHasRow(HWND list, const wchar_t* text) {
+    const int rows = static_cast<int>(SendMessageW(list, LVM_GETITEMCOUNT, 0, 0));
+    for (int i = 0; i < rows; i++) {
+        wchar_t row[128] = {};
+        ListView_GetItemText(list, i, 0, row, ARRAYSIZE(row));
+        if (wcscmp(row, text) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The list views in a window, and how many of them share their image lists.
+struct ListViewCount {
+    int lists = 0;
+    int sharing = 0;
+};
+
+ListViewCount CountListViews(HWND parent) {
+    ListViewCount count;
+    EnumChildWindows(
+        parent,
+        [](HWND child, LPARAM param) -> BOOL {
+            WCHAR className[64] = {};
+            GetClassNameW(child, className, ARRAYSIZE(className));
+            if (_wcsicmp(className, WC_LISTVIEWW) == 0) {
+                auto* count = reinterpret_cast<ListViewCount*>(param);
+                count->lists++;
+                if (GetWindowLongPtrW(child, GWL_STYLE) & LVS_SHAREIMAGELISTS) {
+                    count->sharing++;
+                }
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&count));
+    return count;
+}
+
+// Whether a window class of that name is registered for this module.
+bool ClassRegistered(PCWSTR name) {
+    WNDCLASSEXW wc = {sizeof(wc)};
+    return GetClassInfoExW(GetModuleHandleW(nullptr), name, &wc) != FALSE;
+}
+
+void SetSetting(PCWSTR name, PCWSTR value) {
+    SplitTrayTestHarness::StringSettings()[name] = value;
+}
+
+void SetSetting(PCWSTR name, int value) {
+    SplitTrayTestHarness::IntSettings()[name] = value;
+}
+
+std::wstring ThisExeName() {
+    wchar_t path[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    const wchar_t* slash = wcsrchr(path, L'\\');
+    return slash ? slash + 1 : path;
+}
+
+void SeedBaselineSettings() {
+    SplitTrayTestHarness::ResetSettings();
+    SetSetting(L"defaultTray", L"primary");
+    // Two extra trays on the primary display, so the test has at least two of
+    // Split Tray's trays on any machine: with one display they are trays 2 and
+    // 3, with two they are 3 and 4, after the second display's own.
+    SetSetting(L"extraTrays[0].display", L"primary");
+    SetSetting(L"extraTrays[0].corner", L"bottomLeft");
+    SetSetting(L"extraTrays[1].display", L"primary");
+    SetSetting(L"extraTrays[1].corner", L"topLeft");
+    SetSetting(L"trayPosition", L"bottomRight");
+    SetSetting(L"offsetX", 8);
+    SetSetting(L"offsetY", 8);
+    SetSetting(L"iconSize", 16);
+    SetSetting(L"cellSize", 28);
+    SetSetting(L"maxColumns", 12);
+    SetSetting(L"backgroundColor", L"202020");
+    SetSetting(L"opacity", 235);
+    SetSetting(L"alwaysOnTop", 1);
+    SetSetting(L"showTooltips", 1);
+    SetSetting(L"mirrorHiddenIcons", 1);
+    // Deliberately off: broadcasting TaskbarCreated would reach the user's real
+    // applications and make them all re-register their icons.
+    SetSetting(L"repopulateOnLoad", 0);
+}
+
+// --- The test ------------------------------------------------------------
+
+int RunTests() {
+    printf("split-tray integration test (private desktop, real shell32)\n\n");
+
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+
+    // The stand-in for Explorer's tray window. Registering the class under the
+    // real name is what makes shell32 and the mod both target it.
+    WNDCLASSW shellClass = {};
+    shellClass.lpfnWndProc = FakeShellProc;
+    shellClass.hInstance = hInst;
+    shellClass.lpszClassName = L"Shell_TrayWnd";
+    if (!RegisterClassW(&shellClass)) {
+        printf("  FATAL RegisterClassW(Shell_TrayWnd) failed: %lu\n", GetLastError());
+        return 1;
+    }
+    g_fakeShellWnd = CreateWindowExW(0, L"Shell_TrayWnd", nullptr, 0, 0, 0, 16, 16,
+                                    nullptr, nullptr, hInst, nullptr);
+    CHECK(g_fakeShellWnd != nullptr);
+
+    HWND found = FindWindowW(L"Shell_TrayWnd", nullptr);
+    if (found != g_fakeShellWnd) {
+        printf("  FATAL this desktop is not isolated (FindWindowW found %p, ours is "
+               "%p) - refusing to run against the real shell\n",
+               found, g_fakeShellWnd);
+        return 1;
+    }
+    printf("  isolated: Shell_TrayWnd resolves to the test's own window\n");
+
+    WNDCLASSW ownerClass = {};
+    ownerClass.lpfnWndProc = IconOwnerProc;
+    ownerClass.hInstance = hInst;
+    ownerClass.lpszClassName = L"SplitTrayIntegrationOwner";
+    RegisterClassW(&ownerClass);
+    g_iconOwnerWnd = CreateWindowExW(0, L"SplitTrayIntegrationOwner", L"owner", 0, 0,
+                                    0, 0, 0, nullptr, nullptr, hInst, nullptr);
+    CHECK(g_iconOwnerWnd != nullptr);
+
+    // ---- load the mod -------------------------------------------------
+    printf("\n[1] mod load\n");
+    SeedBaselineSettings();
+    const size_t logAtLoad = SplitTrayTestHarness::LogSnapshot().size();
+    CHECK(Wh_ModInit() == TRUE);
+    // Its tray thread is running before it attaches to anything: without it
+    // nothing draws the mod's trays (DECISIONS 67).
+    CHECK(g_trayWnd.load() != nullptr);
+    Wh_ModAfterInit();
+    CHECK_EQ(WindhawkUtils::SubclassCallCount() > 0, true);
+    CHECK(g_shellTrayWnd.load() == g_fakeShellWnd);
+    // Loaded into a taskbar that already existed: Explorer announced it before
+    // the mod arrived, so collecting the icons already there is the mod's job.
+    // Wh_ModInit attaches in this case, and the attachment used to be skipped
+    // by the check that decides whether to ask.
+    CHECK(LoggedSince(logAtLoad, kWouldAsk));
+
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        for (const auto& tray : g_trays) {
+            printf("      tray %d: %ls\n", tray.number,
+                   TrayLabelLocked(tray.number).c_str());
+        }
+    }
+    CHECK(LastTrayNumber() >= 3);
+    CHECK(PumpUntil([] { return g_trayWnd.load() != nullptr; }));
+    // Every tray floats here (no XAML in this build), each with a window of its
+    // own - even empty, since an empty one still shows a handle.
+    CHECK(PumpUntil([] { return FloatingWindowOf(2) && FloatingWindowOf(3); }));
+    printf("      tray windows created\n");
+
+    // ---- primary routing: the shell must still get the icon ------------
+    printf("\n[2] defaultTray=primary forwards to the shell and does not mirror\n");
+    g_shell.Reset();
+    CHECK(SendTrayNotification(NIM_ADD, 101, L"primary icon") == TRUE);
+    Pump();
+    CHECK_EQ(g_shell.adds, 1);
+    CHECK_EQ(g_shell.lastUID, 101u);
+    CHECK(g_shell.lastTip == L"primary icon");
+    CHECK_EQ(static_cast<int>(MirroredCount()), 0);
+    CHECK_EQ(static_cast<int>(TrackedPrimaryCount()), 1);
+
+    // ---- secondary routing: the shell must NOT get the icon ------------
+    printf("\n[3] a rule for this process sends the next icon to the secondary tray\n");
+    {
+        const std::wstring exe = ThisExeName();
+        SetSetting(L"perProcessRouting[0].exe", exe.c_str());
+        SetSetting(L"perProcessRouting[0].destination", L"secondary");
+        printf("      rule: %ls -> secondary\n", exe.c_str());
+    }
+    Wh_ModSettingsChanged();
+    // The settings change also moves the icon already on screen: the shell should
+    // be told to delete it.
+    CHECK(PumpUntil([] { return g_shell.deletes >= 1; }));
+    CHECK_EQ(static_cast<int>(MirroredCount()), 1);
+    CHECK_EQ(static_cast<int>(TrackedPrimaryCount()), 0);
+    printf("      the existing icon moved trays live (shell deletes=%d)\n",
+           g_shell.deletes);
+
+    g_shell.Reset();
+    CHECK(SendTrayNotification(NIM_ADD, 102, L"secondary icon") == TRUE);
+    Pump();
+    CHECK_EQ(g_shell.adds, 0);  // swallowed: this is the whole point of the mod
+    CHECK_EQ(static_cast<int>(MirroredCount()), 2);
+
+    // ---- the mirrored icon carries the real data ----------------------
+    printf("\n[4] the mirrored icon has the real tooltip and a copied HICON\n");
+    bool tipFound = false;
+    for (size_t i = 0; i < MirroredCount(); i++) {
+        if (MirroredTip(i) == L"secondary icon") {
+            tipFound = true;
+            CHECK(MirroredHasIcon(i));
+        }
+    }
+    CHECK(tipFound);
+
+    // ---- geometry ----------------------------------------------------
+    printf("\n[5] tray 2's window sits inside its monitor at the right size\n");
+    const TrayTarget second = TrayNumbered(2);
+    const RECT monitorWork = second.monitor.workArea;
+    const TrayLayout expected = [&] {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        return ComputeLayout(monitorWork,
+                             static_cast<int>(IconsInTrayLocked(2).size()), g_settings,
+                             second.monitor.dpi, second.corner);
+    }();
+    CHECK_EQ(expected.columns, 2);  // both of this process's icons
+    HWND trayWnd = FloatingWindowOf(2);
+    RECT actual = {};
+    CHECK(PumpUntil([&] {
+        GetWindowRect(trayWnd, &actual);
+        return actual.left == expected.x && actual.top == expected.y &&
+               (actual.right - actual.left) == expected.width;
+    }));
+    printf("      window at (%ld,%ld) %ldx%ld; monitor work area (%ld,%ld)-(%ld,%ld)\n",
+           actual.left, actual.top, actual.right - actual.left,
+           actual.bottom - actual.top, monitorWork.left, monitorWork.top,
+           monitorWork.right, monitorWork.bottom);
+    CHECK(actual.left >= monitorWork.left);
+    CHECK(actual.top >= monitorWork.top);
+    CHECK(actual.right <= monitorWork.right);
+    CHECK(actual.bottom <= monitorWork.bottom);
+    CHECK(IsWindowVisible(trayWnd));
+
+    // ---- clicking the mirror reaches the application ------------------
+    printf("\n[6] clicking a mirrored icon reaches the owning application\n");
+    InterlockedExchange(&g_ownerClicks, 0);
+    {
+        const TrayLayout layout = FloatingLayoutOf(2);
+        const int centre = layout.cell / 2;
+        const LPARAM point = MAKELPARAM(centre, centre);
+        PostMessageW(trayWnd, WM_LBUTTONDOWN, 0, point);
+        PostMessageW(trayWnd, WM_LBUTTONUP, 0, point);
+    }
+    CHECK(PumpUntil([] { return InterlockedCompareExchange(&g_ownerClicks, 0, 0) >= 2; }));
+    printf("      owner received %ld callback messages, last mouse message 0x%lX\n",
+           InterlockedCompareExchange(&g_ownerClicks, 0, 0),
+           InterlockedCompareExchange(&g_ownerLastMouseMessage, 0, 0));
+    CHECK_EQ(InterlockedCompareExchange(&g_ownerLastMouseMessage, 0, 0),
+             static_cast<LONG>(WM_LBUTTONUP));
+
+    // ---- the application can find its icon ---------------------------
+    // From a live report: Telemachus stopped responding to clicks once its
+    // icon was in the secondary tray - no menu, no window - and came back when
+    // it was moved back. Tauri's tray library asks Shell_NotifyIconGetRect
+    // where the icon is before it handles any click, and drops the click when
+    // that fails. The shell does not have an icon that lives in the secondary
+    // tray, so it cannot say; the mod has to.
+    printf("\n[7] an application can find where its icon is\n");
+    {
+        RECT rect;
+        const HRESULT hr = AskWhereIconIs(102, &rect);
+        CHECK_EQ(hr, S_OK);
+
+        // Where the mod drew it: its cell in the mod's own window.
+        const int index = IndexInTray(2, 102);
+        const TrayLayout layout = FloatingLayoutOf(2);
+        RECT window = {};
+        GetWindowRect(trayWnd, &window);
+        CHECK(index >= 0 && layout.columns > 0);
+        if (index >= 0 && layout.columns > 0) {
+            const int column = index % layout.columns;
+            const int row = index / layout.columns;
+            CHECK_EQ(rect.left, window.left + column * layout.cell);
+            CHECK_EQ(rect.top, window.top + row * layout.cell);
+            CHECK_EQ(rect.right - rect.left, layout.cell);
+            CHECK_EQ(rect.bottom - rect.top, layout.cell);
+        }
+        printf("      secondary icon: hr=0x%08lX at (%ld,%ld)-(%ld,%ld); tray window "
+               "at (%ld,%ld)\n",
+               static_cast<unsigned long>(hr), rect.left, rect.top, rect.right,
+               rect.bottom, window.left, window.top);
+
+        // An icon in the primary tray is the shell's to answer for.
+        const std::wstring key = ThisExeName() + L"#101";
+        MoveIconToTray(key, Destination::Primary);
+        CHECK(PumpUntil([] { return g_shellHeld.count({g_iconOwnerWnd, 101u}) > 0; }));
+        CHECK_EQ(AskWhereIconIs(101, &rect), S_OK);
+        CHECK_EQ(rect.left, kShellIconRect.left);
+        CHECK_EQ(rect.top, kShellIconRect.top);
+        CHECK_EQ(rect.right, kShellIconRect.right);
+        CHECK_EQ(rect.bottom, kShellIconRect.bottom);
+        MoveIconToTray(key, Destination::Secondary);
+        CHECK(PumpUntil([] { return g_shellHeld.count({g_iconOwnerWnd, 101u}) == 0; }));
+
+        // And an icon nobody has is still not found.
+        CHECK_EQ(AskWhereIconIs(999, &rect), E_FAIL);
+    }
+
+    // ---- a third tray ------------------------------------------------
+    // More than one of Split Tray's trays: here an extra tray at the top left
+    // of the primary display, which is how a machine with two displays gets a
+    // third tray to test with.
+    printf("\n[8] a third tray, elsewhere on the primary display\n");
+    {
+        const int third = LastTrayNumber();
+        const TrayTarget target = TrayNumbered(third);
+        CHECK(target.available);
+        CHECK(target.monitor.primary);
+        CHECK(!target.forDisplay);
+        CHECK(target.corner == Corner::TopLeft);
+
+        HWND thirdWnd = FloatingWindowOf(third);
+        CHECK(thirdWnd != nullptr);
+        CHECK(IsWindowVisible(thirdWnd));
+        CHECK(PumpUntil([&] { return WindowIsAt(thirdWnd, FloatingLayoutOf(third)); }));
+        RECT rect = {};
+        GetWindowRect(thirdWnd, &rect);
+        CHECK(rect.left >= target.monitor.workArea.left);
+        CHECK(rect.top >= target.monitor.workArea.top);
+        CHECK(rect.left < (target.monitor.workArea.left + target.monitor.workArea.right) / 2);
+        CHECK(rect.top < (target.monitor.workArea.top + target.monitor.workArea.bottom) / 2);
+        printf("      tray %d empty at (%ld,%ld): a handle, %ldx%ld\n", third, rect.left,
+               rect.top, rect.right - rect.left, rect.bottom - rect.top);
+
+        // A click on the handle opens the mod's menu, and what is chosen in it
+        // is done: "Arrange icons...", chosen from the keyboard. The menu is
+        // modal, so no test had chosen anything in it (coverage, 2026-09-26).
+        CHECK(FindWindowW(kArrangeClassName, nullptr) == nullptr);
+        PostMessageW(thirdWnd, WM_LBUTTONDOWN, 0, MAKELPARAM(4, 4));
+        PostMessageW(thirdWnd, WM_LBUTTONUP, 0, MAKELPARAM(4, 4));
+        HWND menu = nullptr;
+        CHECK(PumpUntil([&] {
+            menu = FindWindowW(L"#32768", nullptr);
+            return menu && IsWindowVisible(menu);
+        }));
+        PostMessageW(menu, WM_KEYDOWN, VK_UP, 0);  // the last item, "Reset moved icons"
+        PostMessageW(menu, WM_KEYDOWN, VK_UP, 0);  // "Arrange icons..."
+        PostMessageW(menu, WM_KEYDOWN, VK_RETURN, 0);
+        CHECK(PumpUntil([] { return FindWindowW(kArrangeClassName, nullptr) != nullptr; }));
+        PostMessageW(FindWindowW(kArrangeClassName, nullptr), WM_CLOSE, 0, 0);
+        CHECK(PumpUntil([] { return FindWindowW(kArrangeClassName, nullptr) == nullptr; }));
+        printf("      its handle's menu opened the arrange window, chosen from the "
+               "keyboard\n");
+
+        // An icon moves into it without Explorer hearing a thing: both trays
+        // are Split Tray's.
+        g_shell.Reset();
+        const std::wstring key = ThisExeName() + L"#102";
+        MoveIconToTray(key, Destination::Tray(third));
+        CHECK_EQ(IndexInTray(third, 102), 0);
+        CHECK_EQ(IndexInTray(2, 102), -1);
+        Pump();
+        CHECK_EQ(g_shell.adds, 0);
+        CHECK_EQ(g_shell.deletes, 0);
+        CHECK(PumpUntil([&] { return WindowIsAt(thirdWnd, FloatingLayoutOf(third)); }));
+
+        // A click on it there reaches its application.
+        InterlockedExchange(&g_ownerClicks, 0);
+        const TrayLayout layout = FloatingLayoutOf(third);
+        const LPARAM point = MAKELPARAM(layout.cell / 2, layout.cell / 2);
+        PostMessageW(thirdWnd, WM_LBUTTONDOWN, 0, point);
+        PostMessageW(thirdWnd, WM_LBUTTONUP, 0, point);
+        CHECK(PumpUntil(
+            [] { return InterlockedCompareExchange(&g_ownerClicks, 0, 0) >= 2; }));
+
+        // And its application can find it there.
+        RECT where = {};
+        CHECK_EQ(AskWhereIconIs(102, &where), S_OK);
+        GetWindowRect(thirdWnd, &rect);
+        CHECK_EQ(where.left, rect.left);
+        CHECK_EQ(where.top, rect.top);
+        CHECK_EQ(where.right - where.left, layout.cell);
+        printf("      icon 102 in tray %d at (%ld,%ld)-(%ld,%ld), clicks delivered\n",
+               third, where.left, where.top, where.right, where.bottom);
+
+        // Disabled, the tray's window goes and its icon waits in the shell's
+        // tray; enabled again, the icon goes back where it was put.
+        g_shell.Reset();
+        SetSetting(L"extraTrays[1].disabled", 1);
+        Wh_ModSettingsChanged();
+        CHECK(PumpUntil([&] { return FloatingWindowOf(third) == nullptr; }));
+        CHECK(!TrayNumbered(third).available);
+        CHECK_EQ(LastTrayNumber(), third);  // it keeps its number
+        CHECK(PumpUntil([] { return g_shell.adds >= 1; }));
+        CHECK_EQ(IndexInTray(third, 102), -1);
+        printf("      tray %d disabled: no window, icon 102 back with the shell "
+               "(adds=%d)\n", third, g_shell.adds);
+
+        g_shell.Reset();
+        SetSetting(L"extraTrays[1].disabled", 0);
+        Wh_ModSettingsChanged();
+        CHECK(PumpUntil([&] { return FloatingWindowOf(third) != nullptr; }));
+        CHECK(PumpUntil([] { return g_shell.deletes >= 1; }));
+        CHECK_EQ(IndexInTray(third, 102), 0);
+        printf("      tray %d enabled again: icon 102 is back in it (deletes=%d)\n",
+               third, g_shell.deletes);
+
+        // Back to tray 2, still without the shell.
+        g_shell.Reset();
+        MoveIconToTray(key, Destination::Secondary);
+        CHECK(IndexInTray(2, 102) >= 0);
+        Pump();
+        CHECK_EQ(g_shell.adds, 0);
+        CHECK_EQ(g_shell.deletes, 0);
+    }
+
+    // ---- a version 4 click is the whole click ------------------------
+    // Explorer follows a left button-up with NIN_SELECT and a right one with
+    // WM_CONTEXTMENU for icons at version 3 and up, and applications written
+    // to the version 4 protocol - Microsoft's own sample among them - act on
+    // those rather than on the raw buttons.
+    printf("\n[8b] a version 4 icon is clicked the way Explorer clicks it\n");
+    {
+        constexpr UINT kV4 = 107;
+        CHECK(SendTrayNotification(NIM_ADD, kV4, L"version 4") == TRUE);
+        CHECK(SendSetVersion(kV4, NOTIFYICON_VERSION_4) == TRUE);
+        Pump();
+        CHECK(IndexInTray(2, kV4) >= 0);
+        CHECK(PumpUntil([] { return TrayLaidOutForItsIcons(2); }));
+
+        g_ownerMessages.clear();
+        ClickInTray(2, kV4, WM_LBUTTONDOWN, WM_LBUTTONUP);
+        CHECK(PumpUntil([] { return g_ownerMessages.size() >= 3; }));
+        Pump();
+        CHECK_EQ(g_ownerMessages.size(), static_cast<size_t>(3));
+        if (g_ownerMessages.size() == 3) {
+            CHECK_EQ(g_ownerMessages[0], static_cast<UINT>(WM_LBUTTONDOWN));
+            CHECK_EQ(g_ownerMessages[1], static_cast<UINT>(WM_LBUTTONUP));
+            CHECK_EQ(g_ownerMessages[2], static_cast<UINT>(NIN_SELECT));
+        }
+
+        g_ownerMessages.clear();
+        ClickInTray(2, kV4, WM_RBUTTONDOWN, WM_RBUTTONUP);
+        CHECK(PumpUntil([] { return g_ownerMessages.size() >= 3; }));
+        Pump();
+        CHECK_EQ(g_ownerMessages.size(), static_cast<size_t>(3));
+        if (g_ownerMessages.size() == 3) {
+            CHECK_EQ(g_ownerMessages[2], static_cast<UINT>(WM_CONTEXTMENU));
+        }
+        printf("      left click: button down, button up, NIN_SELECT; right click ends "
+               "with WM_CONTEXTMENU\n");
+
+        // Hovered: WM_MOUSEMOVE as the pointer moves over it, and - version 4,
+        // no NIF_SHOWTIP - NIN_POPUPOPEN once it rests there and NIN_POPUPCLOSE
+        // when it leaves, for the application's own popup (DECISIONS 79).
+        g_ownerMessages.clear();
+        HoverInTray(2, kV4);
+        CHECK(PumpUntil([] { return g_ownerMessages.size() >= 3; }));
+        Pump();
+        CHECK_EQ(g_ownerMessages.size(), static_cast<size_t>(3));
+        if (g_ownerMessages.size() == 3) {
+            CHECK_EQ(g_ownerMessages[0], static_cast<UINT>(WM_MOUSEMOVE));
+            CHECK_EQ(g_ownerMessages[1], static_cast<UINT>(NIN_POPUPOPEN));
+            CHECK_EQ(g_ownerMessages[2], static_cast<UINT>(NIN_POPUPCLOSE));
+        }
+        // An older icon has the move and no popup: its tooltip is the tray's.
+        g_ownerMessages.clear();
+        HoverInTray(2, 102);
+        CHECK(PumpUntil([] { return !g_ownerMessages.empty(); }));
+        SettleModThread();
+        CHECK(g_ownerMessages == std::vector<UINT>{WM_MOUSEMOVE});
+        printf("      hover: WM_MOUSEMOVE, and NIN_POPUPOPEN and NIN_POPUPCLOSE for a "
+               "version 4 icon that draws its own\n");
+
+        SendTrayNotification(NIM_DELETE, kV4, nullptr);
+        Pump();
+    }
+
+    // ---- screen readers and the keyboard in a floating tray ------------
+    // A floating tray was one blank window to a screen reader, and took no
+    // keyboard focus (DECISIONS 85). Read here as Narrator reads it: through
+    // UI Automation, from a thread other than the mod's.
+    printf("\n[8c] a floating tray is read by screen readers and used from the keyboard\n");
+    {
+        constexpr UINT kKeys = 116;
+        CHECK(SendTrayNotification(NIM_ADD, kKeys, L"keyboard\nsecond line") == TRUE);
+        CHECK(SendSetVersion(kKeys, NOTIFYICON_VERSION_4) == TRUE);
+        CHECK(PumpUntil([] { return TrayLaidOutForItsIcons(2); }));
+        SettleModThread();
+        const HWND wnd = FloatingWindowOf(2);
+
+        const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        CHECK(SUCCEEDED(com));
+        IUIAutomation* uia = nullptr;
+        CHECK(SUCCEEDED(CoCreateInstance(kUIAutomationClass, nullptr, CLSCTX_INPROC_SERVER,
+                                         IID_PPV_ARGS(&uia))));
+        IUIAutomationElement* tray = nullptr;
+        CHECK(uia && SUCCEEDED(uia->ElementFromHandle(wnd, &tray)) && tray);
+
+        // A tool bar of buttons, one for each icon, named for it.
+        CONTROLTYPEID type = 0;
+        CHECK(tray && SUCCEEDED(tray->get_CurrentControlType(&type)));
+        CHECK_EQ(type, UIA_ToolBarControlTypeId);
+        IUIAutomationCondition* all = nullptr;
+        IUIAutomationElementArray* cells = nullptr;
+        int count = 0;
+        if (uia && tray && SUCCEEDED(uia->CreateTrueCondition(&all))) {
+            tray->FindAll(TreeScope_Children, all, &cells);
+            all->Release();
+        }
+        CHECK(cells && SUCCEEDED(cells->get_Length(&count)));
+        int expected = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            expected = static_cast<int>(IconsInTrayLocked(2).size());
+        }
+        CHECK_EQ(count, expected);
+        int buttons = 0;
+        for (int i = 0; cells && i < count; i++) {
+            IUIAutomationElement* cell = nullptr;
+            CONTROLTYPEID cellType = 0;
+            if (SUCCEEDED(cells->GetElement(i, &cell)) && cell) {
+                if (SUCCEEDED(cell->get_CurrentControlType(&cellType)) &&
+                    cellType == UIA_ButtonControlTypeId) {
+                    buttons++;
+                }
+                cell->Release();
+            }
+        }
+        CHECK_EQ(buttons, count);
+        if (cells) {
+            cells->Release();
+        }
+        IUIAutomationElement* keys = ChildNamed(uia, tray, L"keyboard");
+        CHECK(keys != nullptr);
+        printf("      tray 2 is a tool bar of %d button(s); icon %u is \"keyboard\"\n", count,
+               kKeys);
+
+        // Pressed by a screen reader: its application hears what Explorer
+        // sends for the keyboard's selection.
+        g_ownerMessages.clear();
+        IUIAutomationInvokePattern* invoke = nullptr;
+        CHECK(keys && SUCCEEDED(keys->GetCurrentPatternAs(UIA_InvokePatternId,
+                                                          IID_PPV_ARGS(&invoke))) &&
+              invoke);
+        CHECK(invoke && SUCCEEDED(invoke->Invoke()));
+        CHECK(PumpUntil([] { return !g_ownerMessages.empty(); }));
+        SettleModThread();
+        CHECK(g_ownerMessages == std::vector<UINT>{NIN_KEYSELECT});
+
+        // Moved to by a screen reader: the tray takes the keyboard's focus, on
+        // that icon. One of the test's own windows has the foreground first,
+        // for Escape to go back to - where this desktop has a foreground
+        // window at all, which one that does not take input may not.
+        HWND before = CreateWindowExW(0, L"STATIC", L"before the tray", WS_POPUP | WS_VISIBLE,
+                                      0, 0, 20, 20, nullptr, nullptr, nullptr, nullptr);
+        SetForegroundWindow(before);
+        const bool foregroundHere =
+            PumpUntil([&] { return GetForegroundWindow() == before; }, 1000);
+        printf("      this desktop %s\n", foregroundHere ? "has a foreground window"
+                                                         : "has no foreground window: Escape "
+                                                           "is checked in Explorer only");
+        SettleModThread();
+        CHECK(keys && SUCCEEDED(keys->SetFocus()));
+        CHECK(PumpUntil([&] { return TrayThreadFocusIs(wnd); }));
+        CHECK(ElementHasFocus(keys));
+        if (foregroundHere) {
+            CHECK(GetForegroundWindow() == wnd);
+            PostMessageW(wnd, WM_KEYDOWN, VK_ESCAPE, 0);
+            CHECK(PumpUntil([&] { return GetForegroundWindow() == before; }));
+        }
+        DestroyWindow(before);
+
+        // Enter, and the menu key (Shift+F10 arrives the same way).
+        g_ownerMessages.clear();
+        PostMessageW(wnd, WM_KEYDOWN, VK_RETURN, 0);
+        CHECK(PumpUntil([] { return !g_ownerMessages.empty(); }));
+        SettleModThread();
+        CHECK(g_ownerMessages == std::vector<UINT>{NIN_KEYSELECT});
+        g_ownerMessages.clear();
+        PostMessageW(wnd, WM_CONTEXTMENU, reinterpret_cast<WPARAM>(wnd), MAKELPARAM(-1, -1));
+        CHECK(PumpUntil([] { return !g_ownerMessages.empty(); }));
+        SettleModThread();
+        CHECK(g_ownerMessages == std::vector<UINT>{WM_CONTEXTMENU});
+
+        // Home goes to the first icon, which Enter then selects.
+        const auto [firstUID, firstVersion] = IconAtIndexInTray(2, 0);
+        CHECK(firstUID != 0 && firstUID != kKeys);
+        PostMessageW(wnd, WM_KEYDOWN, VK_HOME, 0);
+        SettleModThread();
+        CHECK(!ElementHasFocus(keys));
+        g_ownerMessages.clear();
+        PostMessageW(wnd, WM_KEYDOWN, VK_SPACE, 0);
+        CHECK(PumpUntil([] { return !g_ownerMessages.empty(); }));
+        SettleModThread();
+        CHECK(g_ownerMessages == KeyboardSelection(firstVersion));
+        printf("      Invoke, Enter, Space and the menu key reach the application; Home "
+               "moves to icon %u\n", firstUID);
+
+        // Its application gives the focus back to it (NIM_SETFOCUS): the
+        // keyboard is on it again.
+        CHECK(SendSetFocus(kKeys) == TRUE);
+        CHECK(PumpUntil([&] { return ElementHasFocus(keys); }));
+
+        // An icon that goes takes its button with it: a screen reader holding
+        // it is told so, and nothing is read from an icon that is not there.
+        // The keyboard moves to an icon that is.
+        CHECK(SendTrayNotification(NIM_DELETE, kKeys, nullptr) == TRUE);
+        SettleModThread();
+        BSTR stale = nullptr;
+        CHECK(keys && FAILED(keys->get_CurrentName(&stale)));
+        SysFreeString(stale);
+        // Asked of the icon's own button: this desktop is not the one that
+        // takes input, so it has no focused element of its own to ask.
+        IUIAutomationElement* first = ChildNamed(uia, tray, LabelAtIndexInTray(2, 0).c_str());
+        CHECK(first && ElementHasFocus(first));
+        if (first) {
+            first->Release();
+        }
+
+        // So does a tray whose window goes while a screen reader holds it.
+        const int third = LastTrayNumber();
+        IUIAutomationElement* thirdTray = nullptr;
+        CHECK(uia && SUCCEEDED(uia->ElementFromHandle(FloatingWindowOf(third), &thirdTray)) &&
+              thirdTray);
+        IUIAutomationElement* handle = nullptr;
+        if (thirdTray) {
+            IUIAutomationTreeWalker* walker = nullptr;
+            if (SUCCEEDED(uia->get_ControlViewWalker(&walker))) {
+                walker->GetFirstChildElement(thirdTray, &handle);
+                walker->Release();
+            }
+        }
+        CHECK(handle != nullptr);
+        SetSetting(L"extraTrays[1].disabled", 1);
+        Wh_ModSettingsChanged();
+        CHECK(PumpUntil([&] { return FloatingWindowOf(third) == nullptr; }));
+        BSTR gone = nullptr;
+        CHECK(handle && FAILED(handle->get_CurrentName(&gone)));
+        SysFreeString(gone);
+        SetSetting(L"extraTrays[1].disabled", 0);
+        Wh_ModSettingsChanged();
+        CHECK(PumpUntil([&] { return FloatingWindowOf(third) != nullptr; }));
+        printf("      a button whose icon, or whose tray, has gone is reported as not "
+               "there\n");
+
+        for (IUnknown* held : std::initializer_list<IUnknown*>{
+                 handle, thirdTray, invoke, keys, tray, uia}) {
+            if (held) {
+                held->Release();
+            }
+        }
+        if (SUCCEEDED(com)) {
+            CoUninitialize();
+        }
+    }
+
+    // ---- modify and delete ------------------------------------------
+    printf("\n[9] modify updates the mirror, delete removes it\n");
+    g_shell.Reset();
+    CHECK(SendTrayNotification(NIM_MODIFY, 102, L"renamed") == TRUE);
+    Pump();
+    CHECK_EQ(g_shell.modifies, 0);  // still swallowed
+    bool renamed = false;
+    for (size_t i = 0; i < MirroredCount(); i++) {
+        if (MirroredTip(i) == L"renamed") {
+            renamed = true;
+        }
+    }
+    CHECK(renamed);
+
+    const size_t before = MirroredCount();
+    CHECK(SendTrayNotification(NIM_DELETE, 102, nullptr) == TRUE);
+    Pump();
+    CHECK_EQ(static_cast<int>(MirroredCount()), static_cast<int>(before) - 1);
+    CHECK_EQ(g_shell.deletes, 0);  // the shell never had it, so it is not told
+
+    // ---- an application that removes its icon while a move is on its way --
+    // Applications send their messages; a move waits for the taskbar's
+    // thread. So an application's NIM_DELETE is handled before a move into the
+    // primary tray
+    // that was asked for first, and delivering that move afterwards put back an
+    // icon its application had already removed.
+    printf("\n[9b] an icon removed while its move to the primary tray waits\n");
+    {
+        constexpr UINT kLeaving = 106;
+        CHECK(SendTrayNotification(NIM_ADD, kLeaving, L"leaving") == TRUE);
+        Pump();
+        CHECK(IndexInTray(2, kLeaving) >= 0);
+
+        g_shell.Reset();
+        MoveIconToTray(ThisExeName() + L"#" + std::to_wstring(kLeaving),
+                       Destination::Primary);
+        // Sent from this thread, which owns the stand-in Shell_TrayWnd: handled at
+        // once, ahead of anything queued for it.
+        CHECK(SendTrayNotification(NIM_DELETE, kLeaving, nullptr) == TRUE);
+        SettleModThread();
+        CHECK_EQ(g_shell.adds, 0);
+        CHECK_EQ(g_shell.deletes, 0);  // the shell never had it
+        CHECK(g_shellHeld.count({g_iconOwnerWnd, kLeaving}) == 0);
+        printf("      shell adds=%d deletes=%d after the application removed it\n",
+               g_shell.adds, g_shell.deletes);
+    }
+
+    // ---- a partial modify must not wipe fields ----------------------
+    printf("\n[10] a modify carrying only NIF_ICON keeps the tooltip\n");
+    CHECK(SendTrayNotification(NIM_ADD, 103, L"keep me") == TRUE);
+    Pump();
+    {
+        NOTIFYICONDATAW nid = {};
+        nid.cbSize = sizeof(nid);
+        nid.hWnd = g_iconOwnerWnd;
+        nid.uID = 103;
+        nid.uFlags = NIF_ICON;  // no NIF_TIP
+        nid.hIcon = LoadIconW(nullptr, IDI_WARNING);
+        CHECK(Shell_NotifyIconW(NIM_MODIFY, &nid) == TRUE);
+    }
+    Pump();
+    bool keptTip = false;
+    for (size_t i = 0; i < MirroredCount(); i++) {
+        if (MirroredTip(i) == L"keep me") {
+            keptTip = true;
+        }
+    }
+    CHECK(keptTip);
+
+    // ---- an icon moved away and back comes back whole ----------------
+    // From a live report: the Claude usage monitor vanished after being moved
+    // to the secondary tray and back. It adds its icon once, then changes the
+    // picture and the tooltip in separate partial modifies, and destroys each
+    // picture it replaces. Putting it back in the shell has to recreate all of
+    // that - not replay whichever partial message happened to arrive last.
+    printf("\n[11] an icon moved to the secondary tray and back returns whole\n");
+    {
+        constexpr UINT kMoved = 105;
+        HICON first = MakeOwnedIcon(IDI_APPLICATION);
+        {
+            NOTIFYICONDATAW nid = {};
+            nid.cbSize = sizeof(nid);
+            nid.hWnd = g_iconOwnerWnd;
+            nid.uID = kMoved;
+            nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+            nid.uCallbackMessage = kOwnerCallbackMessage;
+            nid.hIcon = first;
+            wcsncpy(nid.szTip, L"usage 9%", 127);
+            CHECK(Shell_NotifyIconW(NIM_ADD, &nid) == TRUE);
+        }
+        Pump();
+
+        // The rule sends this process to the secondary tray, so the shell has
+        // never seen the icon - and must not be asked to version it either.
+        g_shell.Reset();
+        CHECK(SendSetVersion(kMoved, NOTIFYICON_VERSION_4) == TRUE);
+        Pump();
+        CHECK_EQ(g_shell.setVersions, 0);
+
+        const std::wstring key = ThisExeName() + L"#" + std::to_wstring(kMoved);
+
+        // Out to the primary tray.
+        g_shell.Reset();
+        MoveIconToTray(key, Destination::Primary);
+        CHECK(PumpUntil([] { return g_shell.adds >= 1; }));
+        CHECK((g_shell.addFlags & NIF_MESSAGE) != 0);
+        CHECK(g_shell.addIconAlive);
+        CHECK(PumpUntil([] { return g_shell.setVersions >= 1; }));
+        CHECK_EQ(g_shell.lastVersion, static_cast<UINT>(NOTIFYICON_VERSION_4));
+
+        // Updated while it is there, the way the usage monitor updates.
+        HICON second = MakeOwnedIcon(IDI_WARNING);
+        CHECK(SendPartialModify(kMoved, NIF_ICON, second, nullptr) == TRUE);
+        DestroyIcon(first);
+        CHECK(SendPartialModify(kMoved, NIF_TIP, nullptr, L"usage 12%") == TRUE);
+        Pump();
+
+        // Into the secondary tray...
+        g_shell.Reset();
+        MoveIconToTray(key, Destination::Secondary);
+        CHECK(PumpUntil([] { return g_shell.deletes >= 1; }));
+
+        // ...updated while it is away, by an application that releases its
+        // picture as soon as the shell has been handed it...
+        HICON third = MakeOwnedIcon(IDI_INFORMATION);
+        CHECK(SendPartialModify(kMoved, NIF_ICON, third, nullptr) == TRUE);
+        DestroyIcon(third);
+        DestroyIcon(second);
+        Pump();
+
+        // ...and back. The shell has to be given the icon as it now stands.
+        g_shell.Reset();
+        MoveIconToTray(key, Destination::Primary);
+        CHECK(PumpUntil([] { return g_shell.adds >= 1; }));
+        printf("      re-added with flags 0x%X, callback 0x%X, tip '%ls', icon %s\n",
+               g_shell.addFlags, g_shell.addCallback, g_shell.addTip.c_str(),
+               g_shell.addIconAlive ? "alive" : "DEAD");
+        CHECK((g_shell.addFlags & NIF_MESSAGE) != 0);
+        CHECK((g_shell.addFlags & NIF_ICON) != 0);
+        CHECK((g_shell.addFlags & NIF_TIP) != 0);
+        CHECK_EQ(g_shell.addCallback, kOwnerCallbackMessage);
+        CHECK(g_shell.addTip == L"usage 12%");
+        CHECK(g_shell.addIconAlive);
+        // Windows keeps an icon's placement - on the taskbar or in the
+        // overflow - against the executable, so an add without one is a new,
+        // unknown icon.
+        CHECK(!g_shell.addExePath.empty());
+        CHECK(PumpUntil([] { return g_shell.setVersions >= 1; }));
+        CHECK_EQ(g_shell.lastVersion, static_cast<UINT>(NOTIFYICON_VERSION_4));
+        CHECK_EQ(g_shell.deletes, 0);
+
+        SendTrayNotification(NIM_DELETE, kMoved, nullptr);
+        Pump();
+    }
+
+    // ---- the arrange window ------------------------------------------
+    // One image list is shared by every list in it, so each list has to be
+    // told not to destroy it; and its window class belongs to the mod, so it
+    // has to go when the mod does (checked in [12]).
+    printf("\n[11b] the arrange window opens, closes and opens again\n");
+    {
+        HWND modWnd = g_trayWnd.load();
+        CHECK(modWnd != nullptr);
+        PostMessageW(modWnd, WM_ST_ARRANGE, 0, 0);
+        // Shown last, once its lists are made: the window exists a moment
+        // before they do, on the mod's own thread.
+        HWND arrange = nullptr;
+        CHECK(PumpUntil([&] {
+            arrange = FindWindowW(kArrangeClassName, nullptr);
+            return arrange != nullptr && IsWindowVisible(arrange);
+        }));
+        const ListViewCount count = CountListViews(arrange);
+        CHECK(count.lists >= 2);
+        CHECK_EQ(count.sharing, count.lists);
+        printf("      %d list(s), %d sharing the image list\n", count.lists,
+               count.sharing);
+
+        PostMessageW(arrange, WM_CLOSE, 0, 0);
+        CHECK(PumpUntil([] { return FindWindowW(kArrangeClassName, nullptr) == nullptr; }));
+        PostMessageW(modWnd, WM_ST_ARRANGE, 0, 0);
+        CHECK(PumpUntil([] {
+            HWND reopened = FindWindowW(kArrangeClassName, nullptr);
+            return reopened != nullptr && IsWindowVisible(reopened);
+        }));
+        // Left open: unloading has to take it down.
+    }
+
+    // ---- what arrives while a move waits goes with it --------------------
+    // The move into the main tray was queued as a finished record, so an
+    // update that came before the taskbar's thread got to it - swallowed,
+    // since Explorer did not have the icon yet - was missing from the add.
+    printf("\n[11c] an update that arrives while a move waits is in the add\n");
+    {
+        constexpr UINT kWaiting = 107;
+        CHECK(SendTrayNotification(NIM_ADD, kWaiting, L"before") == TRUE);
+        Pump();
+        const std::wstring key = ThisExeName() + L"#" + std::to_wstring(kWaiting);
+
+        g_shell.Reset();
+        MoveIconToTray(key, Destination::Primary);
+        // Sent from this thread, which owns the stand-in: handled at once,
+        // ahead of the wake-up posted for the move.
+        CHECK(SendPartialModify(kWaiting, NIF_TIP, nullptr, L"after") == TRUE);
+        CHECK(PumpUntil([] { return g_shell.adds >= 1; }));
+        CHECK(g_shell.addTip == L"after");
+        printf("      added with tip '%ls'\n", g_shell.addTip.c_str());
+
+        SendTrayNotification(NIM_DELETE, kWaiting, nullptr);
+        Pump();
+        CHECK(g_shellHeld.count({g_iconOwnerWnd, kWaiting}) == 0);
+    }
+
+    // ---- an icon Explorer will not take back -------------------------
+    // A refused add was recorded as taken: the mod believed Explorer had the
+    // icon, never asked again, and the icon was in neither tray.
+    printf("\n[11d] an icon Explorer will not take back is left to its application\n");
+    {
+        constexpr UINT kRefused = 108;
+        CHECK(SendTrayNotification(NIM_ADD, kRefused, L"refused") == TRUE);
+        Pump();
+        const std::wstring key = ThisExeName() + L"#" + std::to_wstring(kRefused);
+
+        g_shell.Reset();
+        g_shellRefusesAdds = true;
+        MoveIconToTray(key, Destination::Primary);
+        // Asked again on later wake-ups - the tray thread's timer makes them;
+        // these are sooner - and no more than kShellAttempts times.
+        for (int i = 0; i < kShellAttempts + 2; i++) {
+            Pump();
+            PostMessageW(g_fakeShellWnd, GetReplayMessage(), 0, 0);
+            Pump();
+        }
+        CHECK_EQ(g_shell.adds, kShellAttempts);
+        CHECK(g_shellHeld.count({g_iconOwnerWnd, kRefused}) == 0);
+        printf("      asked %d time(s), then left to the application\n", g_shell.adds);
+
+        // Its application's own messages go to Explorer now, as with no mod:
+        // an update is refused, and the application adds its icon again.
+        g_shellRefusesAdds = false;
+        CHECK(SendPartialModify(kRefused, NIF_TIP, nullptr, L"still here") == FALSE);
+        CHECK(SendTrayNotification(NIM_ADD, kRefused, L"added again") == TRUE);
+        Pump();
+        CHECK(g_shellHeld.count({g_iconOwnerWnd, kRefused}) == 1);
+
+        // Recorded as Explorer's: moving it away takes it out.
+        g_shell.Reset();
+        MoveIconToTray(key, Destination::Secondary);
+        CHECK(PumpUntil([] { return g_shell.deletes >= 1; }));
+        CHECK(g_shellHeld.count({g_iconOwnerWnd, kRefused}) == 0);
+
+        SendTrayNotification(NIM_DELETE, kRefused, nullptr);
+        Pump();
+    }
+
+    // ---- Explorer's answer to an application's own add -------------------
+    // Recorded only for an icon Explorer had refused to take back from the
+    // mod: an application's own add that Explorer refused was recorded as
+    // there, and an add Explorer refused because it had the icon already -
+    // every application's, when the mod is loaded into a running Explorer -
+    // could not be told apart from one it would not take (DECISIONS 70).
+    printf("\n[11f] what Explorer answers an application's own add is recorded\n");
+    {
+        constexpr UINT kOwnAdd = 111;
+        const std::wstring key = ThisExeName() + L"#" + std::to_wstring(kOwnAdd);
+        // Remembered before it exists, so it goes to the main tray.
+        MoveIconToTray(key, Destination::Primary);
+
+        // Explorer is asked whether it has the icon on the taskbar's next
+        // round, after the application's message (DECISIONS 51): a modify,
+        // with nothing else of the stand-in's changed.
+        g_shellRefusesAdds = true;
+        g_shell.Reset();
+        CHECK(SendTrayNotification(NIM_ADD, kOwnAdd, L"refused") == FALSE);
+        CHECK_EQ(g_shell.modifies, 0);
+        Pump();
+        CHECK_EQ(g_shell.modifies, 1);
+        CHECK(!RecordedAsShells(kOwnAdd));
+        // Its application tries again, and Explorer takes it.
+        g_shellRefusesAdds = false;
+        CHECK(SendTrayNotification(NIM_ADD, kOwnAdd, L"taken") == TRUE);
+        Pump();
+        CHECK(RecordedAsShells(kOwnAdd));
+        // Refused because Explorer has it: still Explorer's.
+        CHECK(SendTrayNotification(NIM_ADD, kOwnAdd, L"again") == FALSE);
+        Pump();
+        CHECK(RecordedAsShells(kOwnAdd));
+        CHECK(g_shellHeld.count({g_iconOwnerWnd, kOwnAdd}) == 1);
+        printf("      a refusal recorded as not there, and one for an icon Explorer "
+               "has as there\n");
+
+        SendTrayNotification(NIM_DELETE, kOwnAdd, nullptr);
+        Pump();
+    }
+
+    // ---- the arrange window follows the icons --------------------------
+    // It was filled when it opened and again only after a move made in it: an
+    // application started or closed meanwhile left rows missing or stale. It
+    // is filled again when which icons there are, or where, changes - keeping
+    // what is selected, and not in the middle of a drag (DECISIONS 75).
+    printf("\n[11g] an open arrange window follows icons as they come and go\n");
+    {
+        HWND arrange = FindWindowW(kArrangeClassName, nullptr);  // left open in [11b]
+        CHECK(arrange != nullptr);
+        HWND mainList = GetDlgItem(arrange, kArrangeListIdBase);
+        HWND secondList = GetDlgItem(arrange, kArrangeListIdBase + 1);
+        CHECK(mainList != nullptr && secondList != nullptr);
+        auto rows = [](HWND list) {
+            return static_cast<int>(SendMessageW(list, LVM_GETITEMCOUNT, 0, 0));
+        };
+        // The main tray's list holds the icons the main tray has - once the
+        // mod's thread has caught up with [11f]'s last removal.
+        CHECK(PumpUntil(
+            [&] { return rows(mainList) == static_cast<int>(TrackedPrimaryCount()); }));
+        const int mainRows = rows(mainList);
+        CHECK(rows(secondList) > 0);
+
+        // A row selected in tray 2's list.
+        LVITEMW select = {};
+        select.stateMask = LVIS_SELECTED;
+        select.state = LVIS_SELECTED;
+        SendMessageW(secondList, LVM_SETITEMSTATE, 0, reinterpret_cast<LPARAM>(&select));
+        wchar_t selected[128] = {};
+        ListView_GetItemText(secondList, 0, 0, selected, ARRAYSIZE(selected));
+
+        // An icon for the main tray comes and goes.
+        constexpr UINT kComesAndGoes = 112;
+        MoveIconToTray(ThisExeName() + L"#" + std::to_wstring(kComesAndGoes),
+                       Destination::Primary);
+        // Each step waits for the refreshes asked for before it to be done:
+        // one still waiting on the mod's thread would show the next step's
+        // change whether that step asked for a refresh or not.
+        SettleModThread();
+        CHECK(SendTrayNotification(NIM_ADD, kComesAndGoes, L"comes and goes") == TRUE);
+        CHECK(PumpUntil([&] { return rows(mainList) == mainRows + 1; }));
+        // Renamed in the main tray, where no tray of the mod's is repainted
+        // (DECISIONS 83).
+        SettleModThread();
+        CHECK(SendPartialModify(kComesAndGoes, NIF_TIP, nullptr, L"comes, renamed") == TRUE);
+        CHECK(PumpUntil([&] { return ListHasRow(mainList, L"comes, renamed"); }));
+        // Removed as applications remove icons, with no flags at all.
+        SettleModThread();
+        CHECK(SendBareDelete(kComesAndGoes) == TRUE);
+        CHECK(PumpUntil([&] { return rows(mainList) == mainRows; }));
+        const int still = ListView_GetNextItem(secondList, -1, LVNI_SELECTED);
+        wchar_t now[128] = {};
+        if (still >= 0) {
+            ListView_GetItemText(secondList, still, 0, now, ARRAYSIZE(now));
+        }
+        CHECK(still >= 0 && wcscmp(now, selected) == 0);
+
+        // An icon's name follows its tooltip, in place: the row is renamed,
+        // not the lists filled again, and the selection stays (DECISIONS 83).
+        constexpr UINT kRenamed = 115;
+        CHECK(SendTrayNotification(NIM_ADD, kRenamed, L"label before") == TRUE);
+        CHECK(PumpUntil([&] { return ListHasRow(secondList, L"label before"); }));
+        CHECK(SendPartialModify(kRenamed, NIF_TIP, nullptr, L"label after") == TRUE);
+        CHECK(PumpUntil([&] {
+            return ListHasRow(secondList, L"label after") &&
+                   !ListHasRow(secondList, L"label before");
+        }));
+        const int selectedNow = ListView_GetNextItem(secondList, -1, LVNI_SELECTED);
+        wchar_t selectedText[128] = {};
+        if (selectedNow >= 0) {
+            ListView_GetItemText(secondList, selectedNow, 0, selectedText,
+                                 ARRAYSIZE(selectedText));
+        }
+        CHECK(selectedNow >= 0 && wcscmp(selectedText, selected) == 0);
+        SendTrayNotification(NIM_DELETE, kRenamed, nullptr);
+        CHECK(PumpUntil([&] { return !ListHasRow(secondList, L"label after"); }));
+
+        // In the middle of a drag the lists wait for it to end.
+        NMLISTVIEW begin = {};
+        begin.hdr.hwndFrom = secondList;
+        begin.hdr.idFrom = kArrangeListIdBase + 1;
+        begin.hdr.code = LVN_BEGINDRAG;
+        begin.iItem = 0;
+        SendMessageW(arrange, WM_NOTIFY, begin.hdr.idFrom, reinterpret_cast<LPARAM>(&begin));
+        CHECK(SendTrayNotification(NIM_ADD, kComesAndGoes, L"during a drag") == TRUE);
+        SettleModThread();
+        CHECK_EQ(rows(mainList), mainRows);
+        SendMessageW(arrange, WM_CANCELMODE, 0, 0);
+        CHECK(PumpUntil([&] { return rows(mainList) == mainRows + 1; }));
+        SendTrayNotification(NIM_DELETE, kComesAndGoes, nullptr);
+        CHECK(PumpUntil([&] { return rows(mainList) == mainRows; }));
+        printf("      rows followed an icon in and out, the selection stayed, and a "
+               "drag was waited for\n");
+
+        // The keyboard, which no test had used (coverage, 2026-09-26): H hides
+        // the selected icon behind its tray's chevron and brings it back, a
+        // tray's number sends it there, and Enter sends one in the primary
+        // tray to tray 2.
+        constexpr UINT kByKeys = 117;
+        const std::wstring byKeys = ThisExeName() + L"#" + std::to_wstring(kByKeys);
+        CHECK(SendTrayNotification(NIM_ADD, kByKeys, L"by the keyboard") == TRUE);
+        CHECK(PumpUntil([&] { return ListHasRow(secondList, L"by the keyboard"); }));
+        // A screen reader finds the row by its name. The live run of 1.1.0
+        // found none, through .NET's client; the lists are standard ones.
+        CHECK(UiaFindsNamed(arrange, L"by the keyboard"));
+        CHECK(SelectRow(secondList, L"by the keyboard"));
+        KeyInArrangeList(arrange, secondList, L'H');
+        CHECK(IsIconHidden(byKeys));
+        // Its row says where it went.
+        CHECK(SelectRow(secondList, L"by the keyboard  (in the overflow)"));
+        KeyInArrangeList(arrange, secondList, L'H');
+        CHECK(!IsIconHidden(byKeys));
+        CHECK(SelectRow(secondList, L"by the keyboard"));
+        KeyInArrangeList(arrange, secondList, L'1');
+        CHECK(PumpUntil([&] { return ListHasRow(mainList, L"by the keyboard"); }));
+        CHECK(!ListHasRow(secondList, L"by the keyboard"));
+        CHECK(SelectRow(mainList, L"by the keyboard"));
+        KeyInArrangeList(arrange, mainList, VK_RETURN);
+        CHECK(PumpUntil([&] { return ListHasRow(secondList, L"by the keyboard"); }));
+        CHECK(SelectRow(secondList, L"by the keyboard"));
+        KeyInArrangeList(arrange, secondList, VK_NUMPAD1);
+        CHECK(PumpUntil([&] { return ListHasRow(mainList, L"by the keyboard"); }));
+        SendTrayNotification(NIM_DELETE, kByKeys, nullptr);
+        CHECK(PumpUntil([&] { return rows(mainList) == mainRows; }));
+        printf("      H hid an icon and brought it back; 1, Enter and the keypad's 1 "
+               "moved it\n");
+    }
+
+    // ---- tooltips follow the setting in trays already open ---------------
+    // A floating tray read the setting only when its window was made, so
+    // switching tooltips off or on did nothing to one already there
+    // (DECISIONS 77).
+    printf("\n[11h] turning tooltips off and on reaches the trays already open\n");
+    {
+        auto tooltipOf = [](HWND owner) {
+            struct Search {
+                HWND owner;
+                HWND found;
+            } search = {owner, nullptr};
+            EnumWindows(
+                [](HWND wnd, LPARAM param) -> BOOL {
+                    auto* s = reinterpret_cast<Search*>(param);
+                    WCHAR className[64] = {};
+                    GetClassNameW(wnd, className, ARRAYSIZE(className));
+                    if (_wcsicmp(className, TOOLTIPS_CLASSW) == 0 &&
+                        GetWindow(wnd, GW_OWNER) == s->owner) {
+                        s->found = wnd;
+                        return FALSE;
+                    }
+                    return TRUE;
+                },
+                reinterpret_cast<LPARAM>(&search));
+            return search.found;
+        };
+        CHECK(tooltipOf(FloatingWindowOf(2)) != nullptr);
+        SetSetting(L"showTooltips", 0);
+        Wh_ModSettingsChanged();
+        CHECK(PumpUntil([&] { return tooltipOf(FloatingWindowOf(2)) == nullptr; }));
+        SetSetting(L"showTooltips", 1);
+        Wh_ModSettingsChanged();
+        CHECK(PumpUntil([&] { return tooltipOf(FloatingWindowOf(2)) != nullptr; }));
+        printf("      tray 2's tooltip went with the setting and came back with it\n");
+    }
+
+    // ---- balloons from icons Explorer does not show ---------------------
+    // Windows shows a balloon only for an icon Explorer holds, and one that
+    // lives only in Split Tray's trays had its balloons swallowed with the rest
+    // of its messages. Explorer is given a hidden copy to show them from
+    // (DECISIONS 78).
+    printf("\n[11i] a balloon from an icon in tray 2 is shown by Explorer, from a hidden "
+           "copy\n");
+    {
+        constexpr UINT kBalloons = 113;
+        const std::pair<HWND, UINT> id = {g_iconOwnerWnd, kBalloons};
+        const std::wstring key = ThisExeName() + L"#" + std::to_wstring(kBalloons);
+        CHECK(SendTrayNotification(NIM_ADD, kBalloons, L"balloons") == TRUE);
+        CHECK(SendSetVersion(kBalloons, NOTIFYICON_VERSION_4) == TRUE);
+        Pump();
+        CHECK(IndexInTray(2, kBalloons) >= 0);
+        CHECK(g_shellHeld.count(id) == 0);
+
+        // The first makes the copy, hidden, gives it its version, and shows
+        // the balloon on it. The icon stays in tray 2.
+        g_shell.Reset();
+        g_shellEvents.clear();
+        CHECK(SendBalloon(kBalloons, L"first") == TRUE);
+        CHECK(ShellEvents() == "add 113 hidden, version 113, modify 113 hidden balloon");
+        CHECK(g_shell.lastBalloon == L"first" && g_shell.lastBalloonHidden);
+        CHECK(g_shellHeld.count(id) == 1 && g_shellHidden.count(id) == 1);
+        CHECK(IndexInTray(2, kBalloons) >= 0);
+
+        // The next goes on the copy.
+        g_shellEvents.clear();
+        CHECK(SendBalloon(kBalloons, L"second") == TRUE);
+        CHECK(ShellEvents() == "version 113, modify 113 hidden balloon");
+
+        // An Explorer that restarted holds nothing: the copy is made again.
+        g_shellHeld.erase(id);
+        g_shellHidden.erase(id);
+        g_shellTips.erase(id);
+        CHECK(SendBalloon(kBalloons, L"after a restart") == TRUE);
+        CHECK(g_shell.lastBalloon == L"after a restart" && g_shell.lastBalloonHidden);
+        CHECK(g_shellHidden.count(id) == 1);
+
+        // Moved to the main tray, it is shown, not added again: Explorer
+        // refuses to add an icon it holds.
+        g_shellEvents.clear();
+        MoveIconToTray(key, Destination::Primary);
+        CHECK(PumpUntil(
+            [&] { return g_shellHeld.count(id) == 1 && g_shellHidden.count(id) == 0; }));
+        CHECK(ShellEvents().find("add") == std::string::npos);
+
+        // Back in tray 2 and ballooning again, then removed by its
+        // application: the copy goes with it.
+        MoveIconToTray(key, Destination::Secondary);
+        CHECK(PumpUntil([&] { return g_shellHeld.count(id) == 0; }));
+        CHECK(SendBalloon(kBalloons, L"once more") == TRUE);
+        CHECK(g_shellHidden.count(id) == 1);
+        CHECK(SendTrayNotification(NIM_DELETE, kBalloons, nullptr) == TRUE);
+        CHECK(g_shellHeld.count(id) == 0);
+        printf("      shown from a hidden copy, made again after a restart, shown when "
+               "moved, gone with its icon\n");
+    }
+
+    // ---- unload restores swallowed icons ---------------------------
+    // Applications carry on while the mod unloads. Once unloading had begun,
+    // the subclass passed their messages to Explorer without keeping track,
+    // and Explorer, which did not have the icons, refused them: an icon
+    // removed then was put back by the hand-back, and one changed then was
+    // put back as it had been (DECISIONS 68).
+    printf("\n[12] unloading returns swallowed icons to the shell, as they are then\n");
+    constexpr UINT kGoing = 109;     // removed by its application meanwhile
+    constexpr UINT kChanging = 110;  // changed by it meanwhile
+    constexpr UINT kHiddenCopy = 114;  // Explorer holds it hidden, for its balloons
+    CHECK(SendTrayNotification(NIM_ADD, kGoing, L"going") == TRUE);
+    CHECK(SendTrayNotification(NIM_ADD, kChanging, L"before") == TRUE);
+    CHECK(SendTrayNotification(NIM_ADD, kHiddenCopy, L"hidden copy") == TRUE);
+    CHECK(SendBalloon(kHiddenCopy, L"before unloading") == TRUE);
+    Pump();
+    const int swallowed = static_cast<int>(MirroredCount());
+    printf("      %d icon(s) currently only in the secondary tray\n", swallowed);
+    g_shell.Reset();
+    // Where Wh_ModBeforeUninit starts; stopping the mod's thread takes a while.
+    g_unloading.store(true);
+    CHECK(SendTrayNotification(NIM_DELETE, kGoing, nullptr) == TRUE);
+    CHECK(SendPartialModify(kChanging, NIF_TIP, nullptr, L"changed meanwhile") == TRUE);
+    const int removalsBefore = WindhawkUtils::UnsubclassCallCount();
+    Wh_ModBeforeUninit();
+    Wh_ModUninit();
+    Pump();
+    // Taken off once, on the taskbar's thread, after the hand-back (DECISIONS 73).
+    CHECK_EQ(WindhawkUtils::UnsubclassCallCount(), removalsBefore + 1);
+    // Every swallowed icon added back but the one removed meanwhile, and the
+    // one Explorer held hidden, which is shown instead (DECISIONS 78).
+    CHECK_EQ(g_shell.adds, swallowed - 2);
+    CHECK(g_shellHeld.count({g_iconOwnerWnd, kGoing}) == 0);
+    CHECK(g_shellHeld.count({g_iconOwnerWnd, kChanging}) == 1);
+    CHECK(g_shellHeld.count({g_iconOwnerWnd, kHiddenCopy}) == 1);
+    CHECK(g_shellHidden.count({g_iconOwnerWnd, kHiddenCopy}) == 0);
+    const std::pair<HWND, UINT> changed = {g_iconOwnerWnd, kChanging};
+    CHECK(g_shellTips[changed] == L"changed meanwhile");
+    SendTrayNotification(NIM_DELETE, kChanging, nullptr);
+    SendTrayNotification(NIM_DELETE, kHiddenCopy, nullptr);
+    CHECK_EQ(static_cast<int>(MirroredCount()), 0);
+    CHECK(g_trayWnd.load() == nullptr);
+    // What screen readers were given went with the windows: the mod's code is
+    // unloaded next (DECISIONS 85).
+    CHECK_EQ(g_uiaObjects.load(), 0);
+    CHECK(WindhawkUtils::UnsubclassCallCount() > 0);
+    printf("      shell received %d restoring NIM_ADD(s), tray window gone\n",
+           g_shell.adds);
+    // A window class outlives the module that registered it unless it is
+    // unregistered, and then points at a window procedure that is gone: the
+    // next load's arrange window would have been created with it.
+    CHECK(FindWindowW(kArrangeClassName, nullptr) == nullptr);
+    CHECK(!ClassRegistered(kArrangeClassName));
+    CHECK(!ClassRegistered(kFloatingClassName));
+    CHECK(!ClassRegistered(kControllerClassName));
+
+    // ---- the subclass really is gone -------------------------------
+    printf("\n[13] after unload the shell sees traffic directly again\n");
+    g_shell.Reset();
+    CHECK(SendTrayNotification(NIM_ADD, 104, L"after unload") == TRUE);
+    Pump();
+    CHECK_EQ(g_shell.adds, 1);
+    CHECK(g_shell.lastTip == L"after unload");
+    SendTrayNotification(NIM_DELETE, 104, nullptr);
+
+    // ---- loaded into an Explorer that already has the icons -------------
+    // Found live, switching the mod off and on in Windhawk. Installing,
+    // updating and switching it on all load it into a running Explorer, which
+    // already holds icons - including every one an earlier load put back as it
+    // unloaded. One its application registers again was swallowed and stayed
+    // in the main tray as well; one whose application only ever updates it
+    // carried no path, so no rule could place it.
+    printf("\n[13b] loaded into an Explorer that already has the icons\n");
+    {
+        constexpr UINT kKnown = 401;       // its application registers it again
+        constexpr UINT kUpdatesOnly = 402; // its application only updates it
+        CHECK(SendTrayNotification(NIM_ADD, kKnown, L"known to Explorer") == TRUE);
+        CHECK(SendTrayNotification(NIM_ADD, kUpdatesOnly, L"updates only") == TRUE);
+        Pump();
+        CHECK(g_shellHeld.count({g_iconOwnerWnd, kKnown}) == 1);
+        CHECK(g_shellHeld.count({g_iconOwnerWnd, kUpdatesOnly}) == 1);
+
+        SeedBaselineSettings();
+        SetSetting(L"perProcessRouting[0].exe", ThisExeName().c_str());
+        SetSetting(L"perProcessRouting[0].destination", L"secondary");
+        CHECK(Wh_ModInit() == TRUE);
+        Wh_ModAfterInit();
+        CHECK(PumpUntil([] { return g_trayWnd.load() != nullptr; }));
+
+        CHECK(SendTrayNotification(NIM_ADD, kKnown, L"known to Explorer") == TRUE);
+        // A modify for an icon the mod has never seen added fails, as it would
+        // with an Explorer that did not have the icon...
+        CHECK(SendPartialModify(kUpdatesOnly, NIF_TIP, nullptr, L"updated") == FALSE);
+        Pump();
+        CHECK(IndexInTray(2, kKnown) >= 0);
+        CHECK(IndexInTray(2, kUpdatesOnly) >= 0);
+        // Taken out of the main tray, not left in both.
+        CHECK(g_shellHeld.count({g_iconOwnerWnd, kKnown}) == 0);
+        CHECK(g_shellHeld.count({g_iconOwnerWnd, kUpdatesOnly}) == 0);
+
+        // ...so an application that recovers adds it again, whole: with the
+        // callback a click in tray 2 is sent with, which a modify does not
+        // carry. Taken, and kept out of the main tray.
+        CHECK(SendTrayNotification(NIM_ADD, kUpdatesOnly, L"added again") == TRUE);
+        Pump();
+        CHECK(IndexInTray(2, kUpdatesOnly) >= 0);
+        CHECK(g_shellHeld.count({g_iconOwnerWnd, kUpdatesOnly}) == 0);
+        const int index = IndexInTray(2, kUpdatesOnly);  // takes the lock itself
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            const auto inTray = IconsInTrayLocked(2);
+            CHECK(index >= 0 && static_cast<size_t>(index) < inTray.size() &&
+                  g_icons[inTray[static_cast<size_t>(index)]].callbackMessage ==
+                      kOwnerCallbackMessage);
+        }
+        printf("      both in tray 2 and gone from the shell's tray; the one that "
+               "only updated was added again, whole\n");
+
+        SendTrayNotification(NIM_DELETE, kKnown, nullptr);
+        SendTrayNotification(NIM_DELETE, kUpdatesOnly, nullptr);
+        Wh_ModBeforeUninit();
+        Wh_ModUninit();
+        Pump();
+    }
+
+    // ---- switched off and on while an application carries on --------------
+    // The test the third review asked for: the mod switched off and on again
+    // and again while an application adds, changes and removes its icons,
+    // with its window open throughout. After each unload Explorer has to hold
+    // exactly the icons the application still has, as it last left them - not
+    // one it removed while the mod was unloading (DECISIONS 68).
+    printf("\n[13c] switched off and on while an application carries on\n");
+    {
+        SeedBaselineSettings();
+        SetSetting(L"perProcessRouting[0].exe", ThisExeName().c_str());
+        SetSetting(L"perProcessRouting[0].destination", L"secondary");
+
+        std::map<UINT, std::wstring> kept;  // the application's icons, and tips
+        kept[701] = L"steady";
+        CHECK(SendTrayNotification(NIM_ADD, 701, L"steady") == TRUE);
+        auto held = [&] {
+            size_t count = 0;
+            for (const auto& [id, tip] : g_shellTips) {
+                if (id.first == g_iconOwnerWnd && id.second >= 700 && id.second < 800) {
+                    count++;
+                }
+            }
+            return count;
+        };
+        bool allAsLeft = true;
+        constexpr int kCycles = 4;
+        for (int cycle = 0; cycle < kCycles; cycle++) {
+            CHECK(Wh_ModInit() == TRUE);
+            Wh_ModAfterInit();
+            CHECK(PumpUntil([] { return g_shellTrayWnd.load() == g_fakeShellWnd; }));
+            // Registered again, as applications do when asked: into tray 2,
+            // and taken out of the main tray.
+            for (const auto& [uID, tip] : kept) {
+                SendTrayNotification(NIM_ADD, uID, tip.c_str());
+            }
+            Pump();
+            CHECK_EQ(static_cast<int>(held()), 0);
+
+            const UINT fleeting = 710 + static_cast<UINT>(cycle);  // gone by the end
+            const UINT arriving = 720 + static_cast<UINT>(cycle);  // new as it unloads
+            CHECK(SendTrayNotification(NIM_ADD, fleeting, L"fleeting") == TRUE);
+            kept[701] = L"changed in cycle " + std::to_wstring(cycle);
+            CHECK(SendPartialModify(701, NIF_TIP, nullptr, kept[701].c_str()) == TRUE);
+
+            // Unloading begins, and the application carries on.
+            g_unloading.store(true);
+            CHECK(SendTrayNotification(NIM_DELETE, fleeting, nullptr) == TRUE);
+            CHECK(SendTrayNotification(NIM_ADD, arriving, L"arriving") == TRUE);
+            kept[arriving] = L"arriving";
+            Wh_ModBeforeUninit();
+            Wh_ModUninit();
+            Pump();
+
+            // Explorer holds what the application has, as it left it.
+            bool asLeft = held() == kept.size();
+            for (const auto& [uID, tip] : kept) {
+                const std::pair<HWND, UINT> id = {g_iconOwnerWnd, uID};
+                asLeft = asLeft && g_shellHeld.count(id) == 1 && g_shellTips[id] == tip;
+            }
+            allAsLeft = allAsLeft && asLeft;
+            CHECK(asLeft);
+        }
+        printf("      %d cycles: Explorer held the application's %zu icon(s), as it "
+               "left them, each time%s\n",
+               kCycles, kept.size(), allAsLeft ? "" : " - NOT");
+        for (const auto& [uID, tip] : kept) {
+            SendTrayNotification(NIM_DELETE, uID, nullptr);
+        }
+        Pump();
+        CHECK_EQ(static_cast<int>(held()), 0);
+    }
+
+    // ---- the tray window does not exist yet at load time -------------
+    // Windhawk injects into explorer.exe before the shell has created its
+    // taskbar, so on a cold Explorer start there is no Shell_TrayWnd to attach to
+    // when Wh_ModInit runs, and the mod has to keep looking. This reproduces
+    // that: the mod is loaded with no tray window in existence at all, and the
+    // window appears afterwards. Getting this wrong makes the mod completely
+    // inert on every real boot while looking healthy in its log.
+    printf("\n[14] mod loaded before any tray window exists\n");
+    // This phase depends on the mod noticing something on a timer, so show its log
+    // rather than leaving a failure here to be guessed at.
+    SplitTrayTestHarness::LogToStdout() = true;
+    DestroyWindow(g_fakeShellWnd);
+    g_fakeShellWnd = nullptr;
+    Pump();
+    CHECK(FindWindowW(L"Shell_TrayWnd", nullptr) == nullptr);
+
+    SeedBaselineSettings();
+    {
+        const std::wstring exe = ThisExeName();
+        SetSetting(L"perProcessRouting[0].exe", exe.c_str());
+        SetSetting(L"perProcessRouting[0].destination", L"secondary");
+    }
+    const size_t logAtColdStart = SplitTrayTestHarness::LogSnapshot().size();
+    CHECK(Wh_ModInit() == TRUE);
+    Wh_ModAfterInit();
+    CHECK(g_shellTrayWnd.load() == nullptr);  // nothing to attach to yet
+    printf("      loaded with no tray window: not attached, as expected\n");
+
+    // The taskbar appears.
+    g_fakeShellWnd = CreateWindowExW(0, L"Shell_TrayWnd", nullptr, 0, 0, 0, 16, 16,
+                                    nullptr, nullptr, hInst, nullptr);
+    CHECK(g_fakeShellWnd != nullptr);
+
+    // The tray thread's timer must notice within a couple of ticks.
+    CHECK(PumpUntil([] { return g_shellTrayWnd.load() != nullptr; }, 8000));
+    CHECK(g_shellTrayWnd.load() == g_fakeShellWnd);
+    printf("      attached to the tray window after it appeared\n");
+
+    // This is how Explorer starts: the taskbar did not exist when the mod
+    // loaded, so Explorer will announce it once its tray is ready. Asking as
+    // well made every application register twice, the first time into a tray
+    // that dropped it - which is how Desk Tray's WhatsApp icon went missing.
+    CHECK(PumpUntil([&] { return LoggedSince(logAtColdStart, kNotAsking); }));
+    CHECK(!LoggedSince(logAtColdStart, kWouldAsk));
+
+    // And interception really works on the window it found late.
+    g_shell.Reset();
+    CHECK(SendTrayNotification(NIM_ADD, 201, L"late attach") == TRUE);
+    Pump();
+    CHECK_EQ(g_shell.adds, 0);  // swallowed, so the subclass is live
+    CHECK_EQ(static_cast<int>(MirroredCount()), 1);
+    printf("      notifications on the new window are intercepted\n");
+
+    // ---- a taskbar Explorer announced while the mod was not watching ----
+    // Explorer recreates its taskbar on some display and theme changes and
+    // announces the new one itself. If that announcement goes out before the
+    // mod has found the new window, every application has re-registered where
+    // the mod could not see it, and it has to ask again.
+    printf("\n[15] a taskbar announced before the mod was watching it\n");
+    {
+        const size_t logAtRecreate = SplitTrayTestHarness::LogSnapshot().size();
+        DestroyWindow(g_fakeShellWnd);
+        g_fakeShellWnd = nullptr;
+        Pump();
+
+        HWND modWnd = g_trayWnd.load();
+        CHECK(modWnd != nullptr);
+        if (modWnd) {
+            // Explorer's announcement, reaching the mod's own top-level window.
+            SendMessageW(modWnd, TaskbarCreatedMessage(), 0, 0);
+        }
+        CHECK(LoggedSince(logAtRecreate, L"before the mod was watching it"));
+
+        g_fakeShellWnd = CreateWindowExW(0, L"Shell_TrayWnd", nullptr, 0, 0, 0, 16,
+                                        16, nullptr, nullptr, hInst, nullptr);
+        CHECK(PumpUntil([] { return g_shellTrayWnd.load() == g_fakeShellWnd; }, 8000));
+        CHECK(PumpUntil([&] { return LoggedSince(logAtRecreate, kWouldAsk); }));
+        printf("      re-attached, and asked for the icons it missed\n");
+
+        // Heard while watching, the same announcement changes nothing.
+        const size_t logWhileWatching = SplitTrayTestHarness::LogSnapshot().size();
+        SendMessageW(modWnd, TaskbarCreatedMessage(), 0, 0);
+        Pump();
+        CHECK(!LoggedSince(logWhileWatching, L"before the mod was watching it"));
+        CHECK(!LoggedSince(logWhileWatching, kWouldAsk));
+    }
+
+    Wh_ModBeforeUninit();
+    Wh_ModUninit();
+    Pump();
+
+    // ---- unloaded straight after loading ----------------------------
+    // The shutdown was posted to the tray thread's window only if that window
+    // already existed. Unloading while the thread was still creating it lost
+    // the shutdown; unloading then waited, gave up, and carried on with the
+    // thread still running code that was about to be unloaded.
+    printf("\n[16] unloaded straight after loading\n");
+    {
+        const size_t logAtQuick = SplitTrayTestHarness::LogSnapshot().size();
+        // Not waiting for the tray thread, as Wh_ModInit does not for one
+        // slower than its budget: the unload then comes before the thread's
+        // window exists, and the shutdown has to be sent once it does.
+        g_trayThreadStartWaitMs = 0;
+        CHECK(Wh_ModInit() == TRUE);
+        g_trayThreadStartWaitMs = 5000;
+        Wh_ModBeforeUninit();
+        // Stopped before Windhawk takes the hooks out, which it does between
+        // the two: the thread installs hooks of its own (DECISIONS 67).
+        CHECK(g_trayThread == nullptr);
+        Wh_ModUninit();
+        CHECK(!LoggedSince(logAtQuick, L"did not"));
+        CHECK(g_trayThread == nullptr);
+        Pump();
+        Sleep(300);
+        Pump();
+        CHECK(FindWindowW(kControllerClassName, nullptr) == nullptr);
+        printf("      the tray thread stopped before unloading finished\n");
+    }
+
+    // ---- a tray thread slower than Wh_ModInit's wait ----------------------
+    // Wh_ModInit took the end of its wait as leave to attach, and a thread
+    // that went on to fail left a subclass swallowing icons into trays that
+    // nothing drew (DECISIONS 69).
+    printf("\n[16b] a tray thread slower than the wait: attached only once it runs\n");
+    {
+        HANDLE hold = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        g_trayThreadHold = hold;
+        g_trayThreadStartWaitMs = 50;
+        CHECK(Wh_ModInit() == TRUE);
+        Wh_ModAfterInit();
+        CHECK(g_trayThreadState.load() == TrayThreadState::Starting);
+        CHECK(g_shellTrayWnd.load() == nullptr);
+
+        // It fails: a window of its controller's class is open, so the class
+        // cannot be registered afresh.
+        WNDCLASSEXW squatterClass = {sizeof(squatterClass)};
+        squatterClass.lpfnWndProc = DefWindowProcW;
+        squatterClass.hInstance = ModuleInstance();
+        squatterClass.lpszClassName = kControllerClassName;
+        CHECK(RegisterClassExW(&squatterClass) != 0);
+        HWND squatter = CreateWindowExW(0, kControllerClassName, nullptr, 0, 0, 0, 0, 0,
+                                        HWND_MESSAGE, nullptr, ModuleInstance(), nullptr);
+        CHECK(squatter != nullptr);
+        SetEvent(hold);
+        CHECK(PumpUntil(
+            [] { return g_trayThreadState.load() == TrayThreadState::GaveUp; }));
+
+        // With nothing to draw the mod's trays, an icon meant for one is
+        // Explorer's, as with no mod.
+        g_shell.Reset();
+        CHECK(SendTrayNotification(NIM_ADD, 501, L"no tray thread") == TRUE);
+        Pump();
+        CHECK_EQ(g_shell.adds, 1);
+        CHECK(g_shellTrayWnd.load() == nullptr);
+        printf("      not attached while it started, nor after it gave up\n");
+        SendTrayNotification(NIM_DELETE, 501, nullptr);
+
+        DestroyWindow(squatter);
+        UnregisterClassW(kControllerClassName, ModuleInstance());
+        Wh_ModBeforeUninit();
+        Wh_ModUninit();
+        g_trayThreadHold = nullptr;
+        CloseHandle(hold);
+        g_trayThreadStartWaitMs = 5000;
+        Pump();
+    }
+
+    // ---- a replay message from outside the mod -------------------------
+    // The message is registered by name, so any process on the desktop can
+    // post it. It used to carry a pointer that the subclass delivered and
+    // deleted; now it only says "look at the icon store".
+    printf("\n[17] a replay message from outside the mod carries nothing it trusts\n");
+    {
+        CHECK(Wh_ModInit() == TRUE);
+        Wh_ModAfterInit();
+        CHECK(PumpUntil([] { return g_trayWnd.load() != nullptr; }));
+        PostMessageW(g_fakeShellWnd, GetReplayMessage(), 0, static_cast<LPARAM>(0x10));
+        Pump();
+        CHECK(IsWindow(g_fakeShellWnd));
+        printf("      a stray replay message with a bogus lParam was ignored\n");
+        Wh_ModBeforeUninit();
+        Wh_ModUninit();
+        Pump();
+    }
+
+    // ---- forgetting an icon long gone, at load ---------------------------
+    // What is remembered of an icon not seen for a year is forgotten as the
+    // mod loads, before any icon is decided by it (DECISIONS 90). The unit
+    // tests call the forgetting directly; this is the load doing it.
+    printf("\n[17b] what is remembered of an icon not seen for a year is forgotten at load\n");
+    {
+        auto& stored = SplitTrayTestHarness::StoredValues();
+        {
+            // As the next start finds it: in storage only.
+            std::lock_guard<std::mutex> lock(g_mutex);
+            RememberPlacement(L"gone.exe#1", Destination::Secondary);
+            g_placements.clear();
+            g_placementsLoaded = false;
+            g_lastSeen.clear();
+            g_lastSeenLoaded = false;
+            g_lastSeenSweepDay = -1;
+        }
+        stored[kLastSeenValue] = L"gone.exe#1=" + std::to_wstring(CurrentDay() - 400);
+        CHECK(stored[kPlacementValue].find(L"gone.exe#1") != std::wstring::npos);
+        CHECK(Wh_ModInit() == TRUE);
+        CHECK(stored[kPlacementValue].find(L"gone.exe#1") == std::wstring::npos);
+        CHECK(stored[kLastSeenValue].find(L"gone.exe#1") == std::wstring::npos);
+        printf("      a move last seen 400 days ago was forgotten as the mod loaded\n");
+        Wh_ModBeforeUninit();
+        Wh_ModUninit();
+        Pump();
+    }
+
+    // ---- a hand-back that cannot finish in time --------------------------
+    // The hand-back can arrive inside a round of settling on the taskbar's
+    // thread - Explorer may run a message loop while it handles a record - and
+    // it is then done once that round is over. Unloading waits for it; one
+    // not done by then keeps the mod loaded rather than unload code the
+    // taskbar's thread is still in (DECISIONS 68). The subclass is left on the
+    // window, since taking it off from here is a message the taskbar's thread
+    // has to answer, and takes itself off there once the icons are back
+    // (DECISIONS 73). Last, since the store is then left as it is.
+    printf("\n[18] a hand-back still to come when unloading ends keeps the mod loaded\n");
+    {
+        CHECK(Wh_ModInit() == TRUE);
+        Wh_ModAfterInit();
+        CHECK(PumpUntil([] { return g_shellTrayWnd.load() == g_fakeShellWnd; }));
+        const size_t logAtStuck = SplitTrayTestHarness::LogSnapshot().size();
+        const DWORD budget = g_taskbarWaitMs;
+        g_taskbarWaitMs = 200;
+        const int removals = WindhawkUtils::UnsubclassCallCount();
+        g_settlingShell = true;  // a round under way, here on this thread
+        Wh_ModBeforeUninit();
+        Wh_ModUninit();
+        g_taskbarWaitMs = budget;
+        CHECK(!g_handedBack.load());
+        CHECK(LoggedSince(logAtStuck, L"stays loaded"));
+        CHECK_EQ(WindhawkUtils::UnsubclassCallCount(), removals);
+
+        // The round ends, and the wake-up after it hands the icons back and
+        // takes the subclass off: Explorer hears applications directly.
+        g_settlingShell = false;
+        SendMessageW(g_fakeShellWnd, GetReplayMessage(), 0, 0);
+        CHECK(g_handedBack.load());
+        CHECK_EQ(WindhawkUtils::UnsubclassCallCount(), removals + 1);
+        g_shell.Reset();
+        CHECK(SendTrayNotification(NIM_ADD, 601, L"after a stuck unload") == TRUE);
+        CHECK_EQ(g_shell.adds, 1);
+        SendTrayNotification(NIM_DELETE, 601, nullptr);
+        printf("      unloading ended with the mod kept loaded; the subclass came off "
+               "once the icons were back\n");
+    }
+
+    DestroyWindow(g_iconOwnerWnd);
+    if (g_fakeShellWnd) {
+        DestroyWindow(g_fakeShellWnd);
+    }
+
+    printf("\n%d checks, %d failure%s\n", g_checks, g_failures,
+           g_failures == 1 ? "" : "s");
+    return g_failures == 0 ? 0 : 1;
+}
+
+// Per-process, so two runs (for example the mutation check and a plain build)
+// cannot end up sharing a desktop and finding each other's Shell_TrayWnd.
+const std::wstring& DesktopName() {
+    static const std::wstring name =
+        L"SplitTrayIntegration_" + std::to_wstring(GetCurrentProcessId());
+    return name;
+}
+
+// Re-launches this executable on the private desktop and mirrors its exit code.
+//
+// SetThreadDesktop would only move the calling thread: threads created afterwards,
+// including the mod's own tray thread, stay on the desktop the *process* was
+// started on. That splits the test across two desktops, and
+// SetWindowsHookEx - which is how a subclass reaches a window on another thread -
+// then fails with ERROR_ACCESS_DENIED because hooks are desktop-scoped. Starting
+// a whole process on the desktop puts every thread there, which is also what
+// happens inside Explorer, where the mod's threads and the taskbar always share a
+// desktop.
+int RunChildOnDesktop() {
+    WCHAR exePath[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, exePath, MAX_PATH)) {
+        printf("GetModuleFileNameW failed: %lu\n", GetLastError());
+        return 1;
+    }
+    std::wstring commandLine = L"\"";
+    commandLine += exePath;
+    commandLine += L"\" --child";
+
+    STARTUPINFOW si = {sizeof(si)};
+    std::wstring desktopName = DesktopName();
+    si.lpDesktop = desktopName.data();
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, TRUE, 0,
+                        nullptr, nullptr, &si, &pi)) {
+        printf("CreateProcessW on the private desktop failed: %lu\n", GetLastError());
+        return 1;
+    }
+    CloseHandle(pi.hThread);
+
+    DWORD exitCode = 1;
+    if (WaitForSingleObject(pi.hProcess, 180000) == WAIT_TIMEOUT) {
+        printf("integration test timed out; terminating\n");
+        TerminateProcess(pi.hProcess, 1);
+    } else {
+        GetExitCodeProcess(pi.hProcess, &exitCode);
+    }
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(exitCode);
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    setvbuf(stdout, nullptr, _IONBF, 0);
+
+    const bool isChild = argc > 1 && strcmp(argv[1], "--child") == 0;
+    if (isChild) {
+        return RunTests();
+    }
+
+    HDESK desktop = CreateDesktopW(DesktopName().c_str(), nullptr, nullptr, 0,
+                                   GENERIC_ALL,
+                                   nullptr);
+    if (!desktop) {
+        printf("CreateDesktopW failed: %lu\n", GetLastError());
+        return 1;
+    }
+    const int result = RunChildOnDesktop();
+    CloseDesktop(desktop);
+    return result;
+}

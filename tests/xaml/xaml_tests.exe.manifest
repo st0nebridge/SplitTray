@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Copied beside xaml_tests.exe by tools/build.ps1, tools/coverage.ps1 and
+     tools/mutate.py. Windows hosts XAML in a Win32 window
+     (DesktopWindowXamlSource) only for a process whose manifest says it was
+     tested on Windows 10 1903 or later; without this, the suite cannot start. -->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <maxversiontested Id="10.0.18362.0"/>
+    </application>
+  </compatibility>
+</assembly>

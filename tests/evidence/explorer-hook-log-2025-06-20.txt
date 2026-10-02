@@ -1,0 +1,651 @@
+07:53:12.031 36004 explorer.exe  [WH] [taskbar-start-button-position] [645:DwmSetWindowAttribute_Hook]: > 000C0132
+07:53:22.125 36004 explorer.exe  [WH] [taskbar-start-button-position] [645:DwmSetWindowAttribute_Hook]: > 00321106
+07:53:27.988 36004 explorer.exe  [WH] [taskbar-start-button-position] [645:DwmSetWindowAttribute_Hook]: > 000C0132
+07:53:28.319 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::ModDebugLoggingScope]: >>> Entering LoadedMod::LoadedMod
+07:53:28.319 36004 explorer.exe  [WH] [LoadedMod::LoadedMod]: Windows 10.0.26100
+07:53:28.320 36004 explorer.exe  [WH] [LoadedMod::LoadedMod]: Windhawk v1.6.1
+07:53:28.320 36004 explorer.exe  [WH] [LoadedMod::LoadedMod]: Mod id: local@split-tray-mirror-v2
+07:53:28.320 36004 explorer.exe  [WH] [LoadedMod::LoadedMod]: Mod version: 2.0.1
+07:53:28.321 36004 explorer.exe  [WH] [LoadedMod::LoadedMod]: Mod base address: 00007FFD84A10000
+07:53:28.322 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::~ModDebugLoggingScope]: <<< Exiting LoadedMod::LoadedMod
+07:53:28.323 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::ModDebugLoggingScope]: >>> Entering LoadedMod::Initialize
+07:53:28.324 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [720:Wh_ModInit]: [INIT] Split Tray Mirror v2 - Initializing with proper API hooks
+07:53:28.326 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::ModDebugLoggingScope]: >>> Entering LoadedMod::SetFunctionHook
+07:53:28.327 36004 explorer.exe  [WH] [LoadedMod::SetFunctionHook]: Target: 00007FFDB0394030
+07:53:28.328 36004 explorer.exe  [WH] [LoadedMod::SetFunctionHook]: Hook: 00007FFD84A11B70
+07:53:28.328 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::~ModDebugLoggingScope]: <<< Exiting LoadedMod::SetFunctionHook
+07:53:28.329 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::ModDebugLoggingScope]: >>> Entering LoadedMod::SetFunctionHook
+07:53:28.333 36004 explorer.exe  [WH] [LoadedMod::SetFunctionHook]: Target: 00007FFDB04C8970
+07:53:28.334 36004 explorer.exe  [WH] [LoadedMod::SetFunctionHook]: Hook: 00007FFD84A12470
+07:53:28.335 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::~ModDebugLoggingScope]: <<< Exiting LoadedMod::SetFunctionHook
+07:53:28.335 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [735:Wh_ModInit]: [INIT] API hooks installed successfully
+07:53:28.336 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::~ModDebugLoggingScope]: <<< Exiting LoadedMod::Initialize
+07:53:28.343 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::ModDebugLoggingScope]: >>> Entering LoadedMod::AfterInit
+07:53:28.343 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [742:Wh_ModAfterInit]: [INIT] Creating mirror window and starting monitoring
+07:53:28.344 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [505:CreateMirrorWindow]: Using secondary monitor to the right
+07:53:28.356 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [529:CreateMirrorWindow]: Mirror window created at (3620,980) size 200x32
+07:53:28.356 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [564:EnumerateExistingTrayIcons]: [ENUM] Starting enumeration of existing tray icons...
+07:53:28.356 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [596:ExtractIconsFromNotificationArea]: [ENUM] Could not find SysPager
+07:53:28.356 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [574:EnumerateExistingTrayIcons]: [ENUM] Notification area extraction failed, waiting for Shell_NotifyIcon hooks
+07:53:28.357 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [755:Wh_ModAfterInit]: [INIT] Mirror initialized with 0 icons
+07:53:28.358 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::~ModDebugLoggingScope]: <<< Exiting LoadedMod::AfterInit
+07:53:28.938 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=ADD, hWnd=00000000008F0DBA, uID=1225
+07:53:28.943 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [278:AddOrUpdateIcon]: [ICON] New tray icon added: hWnd=00000000008F0DBA, uID=1225
+07:53:28.944 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [301:AddOrUpdateIcon]: [ICON] Updated icon for hWnd=00000000008F0DBA, uID=1225
+07:53:28.945 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [307:AddOrUpdateIcon]: [ICON] Updated tooltip: 'Battery Meter'
+07:53:28.948 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [349:AddOrUpdateIcon]: [ICON] Icon 9375162_1225: Battery Meter (Process: 36004)
+07:53:28.949 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=OTHER, hWnd=00000000008F0DBA, uID=1225
+07:53:28.951 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=DELETE, hWnd=00000000008F0DBA, uID=1226
+07:53:29.072 36004 explorer.exe  [WH] [taskbar-start-button-position] [578:HandleLoadedModuleIfTaskbarView]: Loaded C:\WINDOWS\SystemApps\MicrosoftWindows.Client.Core_cw5n1h2txyewy\Taskbar.View.dll
+07:53:29.073 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::ModDebugLoggingScope]: >>> Entering LoadedMod::HookSymbols
+07:53:29.074 36004 explorer.exe  [WH] [`anonymous-namespace'::HookSymbolsSession::CalculateHookSymbolsInitialParams]: Module: 00007FFD5F950000
+07:53:29.074 36004 explorer.exe  [WH] [`anonymous-namespace'::HookSymbolsSession::CalculateHookSymbolsInitialParams]: Path: C:\WINDOWS\SystemApps\MicrosoftWindows.Client.Core_cw5n1h2txyewy\Taskbar.View.dll
+07:53:29.074 36004 explorer.exe  [WH] [`anonymous-namespace'::HookSymbolsSession::CalculateHookSymbolsInitialParams]: Version: 2125.12300.0.0
+07:53:29.075 36004 explorer.exe  [WH] [LoadedMod::HookSymbols]: Using symbol cache pdb_2BF50A27DCBB42BE80706F666CC728BC1: 1#taskbar.view.dll#1746234405-10522624#public: __cdecl winrt::impl::consume_Windows_UI_Xaml_IUIElement<struct winrt::Windows::UI::Xaml::IUIElement>::Arrange(struct winrt::Windows::Foundation::Rect const &)const #1880052#protected: virtual void __cdecl winrt::Taskbar::implementation::AugmentedEntryPointButton::UpdateButtonPadding(void)#3792320
+07:53:29.076 36004 explorer.exe  [WH] [`anonymous-namespace'::HookSymbolsSession::OnSymbolResolved]: To be hooked 00007FFD5FB1AFF4: public: __cdecl winrt::impl::consume_Windows_UI_Xaml_IUIElement<struct winrt::Windows::UI::Xaml::IUIElement>::Arrange(struct winrt::Windows::Foundation::Rect const &)const 
+07:53:29.077 36004 explorer.exe  [WH] [`anonymous-namespace'::HookSymbolsSession::OnSymbolResolved]: To be hooked 00007FFD5FCEDDC0: protected: virtual void __cdecl winrt::Taskbar::implementation::AugmentedEntryPointButton::UpdateButtonPadding(void)
+07:53:29.079 36004 explorer.exe  [WH] [`anonymous-namespace'::HookSymbolsSession::ApplyPendingHooks]: Applying hooks
+07:53:29.079 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::ModDebugLoggingScope]: >>> Entering LoadedMod::SetFunctionHook
+07:53:29.080 36004 explorer.exe  [WH] [LoadedMod::SetFunctionHook]: Target: 00007FFD5FB1AFF4
+07:53:29.080 36004 explorer.exe  [WH] [LoadedMod::SetFunctionHook]: Hook: 00007FFDA5332870
+07:53:29.080 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::~ModDebugLoggingScope]: <<< Exiting LoadedMod::SetFunctionHook
+07:53:29.081 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::ModDebugLoggingScope]: >>> Entering LoadedMod::SetFunctionHook
+07:53:29.081 36004 explorer.exe  [WH] [LoadedMod::SetFunctionHook]: Target: 00007FFD5FCEDDC0
+07:53:29.081 36004 explorer.exe  [WH] [LoadedMod::SetFunctionHook]: Hook: 00007FFDA5333130
+07:53:29.081 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::~ModDebugLoggingScope]: <<< Exiting LoadedMod::SetFunctionHook
+07:53:29.082 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::~ModDebugLoggingScope]: <<< Exiting LoadedMod::HookSymbols
+07:53:29.082 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::ModDebugLoggingScope]: >>> Entering LoadedMod::ApplyHookOperations
+07:53:29.088 36004 explorer.exe  [WH] [`anonymous-namespace'::ModDebugLoggingScope::~ModDebugLoggingScope]: <<< Exiting LoadedMod::ApplyHookOperations
+07:53:29.167 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=MODIFY, hWnd=00000000008F0DBA, uID=1225
+07:53:29.167 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [301:AddOrUpdateIcon]: [ICON] Updated icon for hWnd=00000000008F0DBA, uID=1225
+07:53:29.168 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [307:AddOrUpdateIcon]: [ICON] Updated tooltip: 'Battery status: fully charged (100%)'
+07:53:29.169 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [349:AddOrUpdateIcon]: [ICON] Icon 9375162_1225: Battery status: fully charged (100%) (Process: 36004)
+07:53:29.273 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=ADD, hWnd=00000000005D0A44, uID=100
+07:53:29.273 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [278:AddOrUpdateIcon]: [ICON] New tray icon added: hWnd=00000000005D0A44, uID=100
+07:53:29.274 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [301:AddOrUpdateIcon]: [ICON] Updated icon for hWnd=00000000005D0A44, uID=100
+07:53:29.278 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [307:AddOrUpdateIcon]: [ICON] Updated tooltip: 'The Audio Service is not running.'
+07:53:29.278 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [349:AddOrUpdateIcon]: [ICON] Icon 6097476_100: The Audio Service is not running. (Process: 36004)
+07:53:29.288 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=ADD, hWnd=00000000008F0DBA, uID=1226
+07:53:29.289 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [278:AddOrUpdateIcon]: [ICON] New tray icon added: hWnd=00000000008F0DBA, uID=1226
+07:53:29.289 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [301:AddOrUpdateIcon]: [ICON] Updated icon for hWnd=00000000008F0DBA, uID=1226
+07:53:29.290 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [307:AddOrUpdateIcon]: [ICON] Updated tooltip: 'Safely Remove Hardware and Eject Media'
+07:53:29.290 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [349:AddOrUpdateIcon]: [ICON] Icon 9375162_1226: Safely Remove Hardware and Eject Media (Process: 36004)
+07:53:29.310 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=ADD, hWnd=00000000005D0A44, uID=100
+07:53:29.319 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [301:AddOrUpdateIcon]: [ICON] Updated icon for hWnd=00000000005D0A44, uID=100
+07:53:29.320 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=OTHER, hWnd=00000000008F0DBA, uID=1226
+07:53:29.321 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [307:AddOrUpdateIcon]: [ICON] Updated tooltip: '1 - LG TV: 36%'
+07:53:29.321 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [349:AddOrUpdateIcon]: [ICON] Icon 6097476_100: 1 - LG TV: 36% (Process: 36004)
+07:53:29.348 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=ADD, hWnd=00000000006C0C28, uID=0
+07:53:29.349 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [278:AddOrUpdateIcon]: [ICON] New tray icon added: hWnd=00000000006C0C28, uID=0
+07:53:29.365 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [301:AddOrUpdateIcon]: [ICON] Updated icon for hWnd=00000000006C0C28, uID=0
+07:53:29.372 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [307:AddOrUpdateIcon]: [ICON] Updated tooltip: 'Bluetooth Devices'
+07:53:29.372 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [349:AddOrUpdateIcon]: [ICON] Icon 7081000_0: Bluetooth Devices (Process: 36004)
+07:53:29.467 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=OTHER, hWnd=00000000006C0C28, uID=0
+07:53:29.504 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=ADD, hWnd=00000000006C0C28, uID=0
+07:53:29.507 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=ADD, hWnd=00000000008F0DBA, uID=1226
+07:53:29.509 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [301:AddOrUpdateIcon]: [ICON] Updated icon for hWnd=00000000006C0C28, uID=0
+07:53:29.509 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [307:AddOrUpdateIcon]: [ICON] Updated tooltip: 'Bluetooth Devices'
+07:53:29.510 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [349:AddOrUpdateIcon]: [ICON] Icon 7081000_0: Bluetooth Devices (Process: 36004)
+07:53:29.513 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [301:AddOrUpdateIcon]: [ICON] Updated icon for hWnd=00000000008F0DBA, uID=1226
+07:53:29.515 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [307:AddOrUpdateIcon]: [ICON] Updated tooltip: 'Safely Remove Hardware and Eject Media'
+07:53:29.516 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [349:AddOrUpdateIcon]: [ICON] Icon 9375162_1226: Safely Remove Hardware and Eject Media (Process: 36004)
+07:53:29.517 36004 explorer.exe  [WH] [taskbar-start-button-position] [645:DwmSetWindowAttribute_Hook]: > 001704BC
+07:53:29.519 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=ADD, hWnd=00000000005D0A44, uID=100
+07:53:29.519 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [301:AddOrUpdateIcon]: [ICON] Updated icon for hWnd=00000000005D0A44, uID=100
+07:53:29.519 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [307:AddOrUpdateIcon]: [ICON] Updated tooltip: '1 - LG TV: 36%'
+07:53:29.520 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [349:AddOrUpdateIcon]: [ICON] Icon 6097476_100: 1 - LG TV: 36% (Process: 36004)
+07:53:29.581 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=OTHER, hWnd=00000000008F0DBA, uID=1226
+07:53:29.590 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=MODIFY, hWnd=00000000008F0DBA, uID=1225
+07:53:29.590 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [301:AddOrUpdateIcon]: [ICON] Updated icon for hWnd=00000000008F0DBA, uID=1225
+07:53:29.591 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [349:AddOrUpdateIcon]: [ICON] Icon 9375162_1225: Battery status: fully charged (100%) (Process: 36004)
+07:53:29.894 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.894 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.894 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.895 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.895 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.896 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.896 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.896 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.919 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.920 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.922 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.927 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.927 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.928 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.928 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.929 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.929 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.929 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.929 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.931 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.932 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.932 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.953 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.953 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.953 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.953 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.954 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.955 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.955 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.955 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.968 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.971 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.973 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.994 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.994 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:29.994 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.055 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.056 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.056 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.056 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.057 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.057 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.057 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.057 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.060 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.060 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.061 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.095 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.097 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.099 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.099 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.099 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.100 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.100 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.100 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.102 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.103 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.103 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.108 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.109 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.110 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.111 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.113 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.114 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.118 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.119 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.120 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.120 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.121 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.149 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.152 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.158 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.158 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.159 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.159 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.159 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.160 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.161 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.162 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.162 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.176 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.177 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.182 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.183 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.185 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.188 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.188 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.189 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.190 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.190 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.191 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.208 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.208 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.208 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.209 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.209 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.210 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.210 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.211 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.213 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.213 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.214 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.225 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.226 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.227 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.227 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.228 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.228 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.228 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.228 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.230 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.231 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.231 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.241 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.242 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.242 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.243 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.245 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.247 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.248 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.249 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.253 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.255 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.256 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.275 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.275 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.275 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.276 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.277 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.277 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.277 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.278 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.279 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.279 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.279 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.302 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.304 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.306 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.307 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.308 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.308 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.308 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.309 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.310 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.311 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.311 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.325 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.325 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.325 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.325 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.325 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.325 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.326 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.326 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.328 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.328 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.328 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.342 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.342 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.343 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.344 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.344 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.351 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.352 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.353 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.358 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.358 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.360 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.374 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.374 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.375 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.376 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.377 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.379 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.380 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.380 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.382 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.383 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.384 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.391 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.391 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.391 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.392 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.392 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.393 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.393 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.393 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.394 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.394 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.395 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.409 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.409 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.409 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.409 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.410 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.411 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.411 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.411 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.412 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.412 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.413 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.425 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.425 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.425 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.426 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.426 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.426 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.427 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.428 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.430 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.430 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.432 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.442 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.442 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.442 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.442 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.442 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.443 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.443 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.444 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.445 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.445 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.445 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.472 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.472 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.473 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.473 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.474 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.474 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.474 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.475 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.476 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.477 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.477 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.491 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.492 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.492 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.492 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.492 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.494 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.495 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.495 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.497 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.498 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.498 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.508 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.509 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.509 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.509 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.509 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.510 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.510 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.511 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.512 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.512 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.513 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.525 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.526 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.526 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.526 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.526 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.527 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.528 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.528 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.529 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.530 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.530 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.541 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.542 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.542 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.543 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.543 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.543 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.544 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.544 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.546 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.546 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.546 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.558 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.558 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.558 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.559 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.559 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.560 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.560 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.560 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.561 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.562 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.562 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.575 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.575 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.575 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.577 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.579 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.581 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.582 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.584 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.585 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.586 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.586 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.590 36004 explorer.exe  [WH] [local@split-tray-mirror-v2] [208:Shell_NotifyIconW_Hook]: [HOOK] Shell_NotifyIconW: msg=DELETE, hWnd=00000000005D0A44, uID=101
+07:53:30.591 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.591 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.591 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.592 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.592 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.592 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.592 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.593 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.594 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.595 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.595 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.624 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.625 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.626 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.628 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.628 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.629 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.629 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.630 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.632 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.634 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.634 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.641 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.642 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.642 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.642 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.642 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.643 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.643 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.643 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.644 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.644 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.645 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.659 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.668 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.676 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.677 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.677 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.677 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.677 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.678 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.680 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.680 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.680 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.691 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.692 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.692 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.692 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.693 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.693 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.693 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.693 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.695 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.695 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.696 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.708 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.709 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.709 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.709 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.709 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.709 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.709 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.710 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.712 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.713 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.714 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.725 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.725 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.725 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.726 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.726 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.726 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.728 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.728 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.729 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.731 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.731 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.741 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.742 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.742 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.742 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.742 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.742 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.743 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.743 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.744 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.745 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.745 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.758 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.766 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.770 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.770 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.771 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.771 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.772 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.772 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.773 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.773 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.774 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.791 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.791 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.792 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.792 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.792 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.793 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.793 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.793 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.795 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.796 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.796 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.808 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.809 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.809 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.810 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.810 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.811 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.811 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.811 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.813 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.814 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.814 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.825 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.825 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.826 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.826 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.826 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.827 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.827 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.828 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.829 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.830 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.830 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.841 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.842 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.842 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.842 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.842 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.842 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.843 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.843 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.845 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.845 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.846 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.858 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.858 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.858 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.859 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.859 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.860 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.860 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.861 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.862 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.862 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.862 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.875 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.875 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.875 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.876 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.876 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.876 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.877 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.877 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.880 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.880 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.881 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.891 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.892 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.892 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.893 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.893 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.894 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.895 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.895 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.897 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.899 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.899 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.908 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.909 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.910 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.910 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.911 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.911 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.912 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.913 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.915 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.917 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.918 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.939 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.940 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.941 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.943 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.944 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.944 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.944 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.945 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.947 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.948 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.948 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.958 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.958 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.959 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.959 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.959 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.959 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.960 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.960 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.962 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.962 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.962 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.981 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.982 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.985 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.986 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.986 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.987 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.987 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.987 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.989 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.989 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:30.990 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.012 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.013 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.014 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.014 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.014 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.014 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.014 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.015 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.018 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.019 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.021 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.041 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.042 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.042 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.042 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.043 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.043 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.044 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.044 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.046 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.046 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.046 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.058 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.058 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.058 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.058 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.059 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.059 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.059 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >
+07:53:31.059 36004 explorer.exe  [WH] [taskbar-start-button-position] [390:IUIElement_Arrange_Hook]: >

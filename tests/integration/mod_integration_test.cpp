@@ -770,6 +770,90 @@ void SeedBaselineSettings() {
     SetSetting(L"repopulateOnLoad", 0);
 }
 
+// --- Another process's taskbar -------------------------------------------
+
+// Explorer runs folder windows in processes of their own, and Windhawk loads
+// the mod into each. This is a process standing in for the one that shows the
+// taskbar: this executable again, started with --taskbar-owner on this
+// desktop, with a Shell_TrayWnd of its own and nothing else.
+struct TaskbarOwner {
+    HANDLE process = nullptr;
+    HWND wnd = nullptr;
+};
+
+LRESULT CALLBACK OtherTaskbarProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_DESTROY) {
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+int RunTaskbarOwner() {
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    WNDCLASSW cls = {};
+    cls.lpfnWndProc = OtherTaskbarProc;
+    cls.hInstance = hInst;
+    cls.lpszClassName = L"Shell_TrayWnd";
+    if (!RegisterClassW(&cls) ||
+        !CreateWindowExW(0, L"Shell_TrayWnd", nullptr, 0, 0, 0, 16, 16, nullptr,
+                         nullptr, hInst, nullptr)) {
+        return 1;
+    }
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        DispatchMessageW(&msg);
+    }
+    return 0;
+}
+
+// Started without naming a desktop, so it opens on this one.
+TaskbarOwner StartTaskbarOwner() {
+    TaskbarOwner owner;
+    WCHAR exePath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    std::wstring commandLine = L"\"";
+    commandLine += exePath;
+    commandLine += L"\" --taskbar-owner";
+    STARTUPINFOW si = {sizeof(si)};
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                        nullptr, &si, &pi)) {
+        printf("  could not start the taskbar's process: %lu\n", GetLastError());
+        return owner;
+    }
+    CloseHandle(pi.hThread);
+    owner.process = pi.hProcess;
+    PumpUntil(
+        [&] {
+            owner.wnd = FindWindowW(L"Shell_TrayWnd", nullptr);
+            return owner.wnd != nullptr;
+        },
+        5000);
+    return owner;
+}
+
+void StopTaskbarOwner(TaskbarOwner* owner) {
+    if (owner->wnd) {
+        PostMessageW(owner->wnd, WM_CLOSE, 0, 0);
+    }
+    if (owner->process) {
+        if (WaitForSingleObject(owner->process, 5000) == WAIT_TIMEOUT) {
+            TerminateProcess(owner->process, 1);
+        }
+        CloseHandle(owner->process);
+    }
+    *owner = TaskbarOwner{};
+}
+
+int StoredWritesSoFar() {
+    int writes = 0;
+    for (const auto& [name, count] : SplitTrayTestHarness::StoredValueWrites()) {
+        writes += count;
+    }
+    return writes;
+}
+
 // --- The test ------------------------------------------------------------
 
 int RunTests() {
@@ -2253,6 +2337,72 @@ int RunTests() {
         Pump();
     }
 
+    // ---- an Explorer that does not show the taskbar ----------------------
+    // Explorer runs folder windows in processes of their own, and Windhawk
+    // loads the mod into every one. The mod took the taskbar it found there
+    // for its own - another process's window, which it tried and failed to
+    // attach to every two seconds - and drew its trays: a second tray 2,
+    // empty, floating beside the real one. Found live (DECISIONS 92).
+    printf("\n[17c] an Explorer that does not show the taskbar draws nothing\n");
+    {
+        DestroyWindow(g_fakeShellWnd);
+        g_fakeShellWnd = nullptr;
+        Pump();
+
+        // Loaded while another process shows the taskbar: not loaded at all.
+        TaskbarOwner other = StartTaskbarOwner();
+        CHECK(other.wnd != nullptr);
+        const size_t logAtRefusal = SplitTrayTestHarness::LogSnapshot().size();
+        const int writesBefore = StoredWritesSoFar();
+        const BOOL loaded = Wh_ModInit();
+        CHECK(loaded == FALSE);
+        CHECK(g_trayThread == nullptr);
+        CHECK(FindWindowW(kControllerClassName, nullptr) == nullptr);
+        CHECK_EQ(StoredWritesSoFar(), writesBefore);
+        CHECK(LoggedSince(logAtRefusal, L"another process"));
+        if (loaded) {
+            Wh_ModBeforeUninit();
+            Wh_ModUninit();
+            Pump();
+        }
+        printf("      not loaded beside another process's taskbar\n");
+        StopTaskbarOwner(&other);
+        CHECK(FindWindowW(L"Shell_TrayWnd", nullptr) == nullptr);
+
+        // Loaded before there is a taskbar, as on a cold start, which then
+        // turns out to be another process's.
+        CHECK(Wh_ModInit() == TRUE);
+        Wh_ModAfterInit();
+        const int third = LastTrayNumber();
+        CHECK(PumpUntil([&] { return FloatingWindowOf(third) != nullptr; }, 8000));
+        const size_t logAtOther = SplitTrayTestHarness::LogSnapshot().size();
+        other = StartTaskbarOwner();
+        CHECK(other.wnd != nullptr);
+        CHECK(PumpUntil(
+            [] { return FindWindowW(kFloatingClassName, nullptr) == nullptr; }, 8000));
+        CHECK(FloatingWindowOf(third) == nullptr);
+        // Past a tick of the timer that looks for the taskbar.
+        Sleep(2500);
+        Pump();
+        CHECK(g_shellTrayWnd.load() == nullptr);
+        CHECK(!LoggedSince(logAtOther, L"failed to subclass"));
+        CHECK(FindWindowW(kFloatingClassName, nullptr) == nullptr);
+        printf("      its trays went once the taskbar was another process's\n");
+
+        // With no taskbar anywhere, as while Explorer makes its own again,
+        // they are drawn.
+        StopTaskbarOwner(&other);
+        CHECK(PumpUntil([&] { return FloatingWindowOf(third) != nullptr; }, 8000));
+        printf("      and came back with no taskbar anywhere\n");
+        Wh_ModBeforeUninit();
+        Wh_ModUninit();
+        Pump();
+
+        g_fakeShellWnd = CreateWindowExW(0, L"Shell_TrayWnd", nullptr, 0, 0, 0, 16, 16,
+                                        nullptr, nullptr, hInst, nullptr);
+        CHECK(g_fakeShellWnd != nullptr);
+    }
+
     // ---- a hand-back that cannot finish in time --------------------------
     // The hand-back can arrive inside a round of settling on the taskbar's
     // thread - Explorer may run a message loop while it handles a record - and
@@ -2366,6 +2516,9 @@ int main(int argc, char** argv) {
     const bool isChild = argc > 1 && strcmp(argv[1], "--child") == 0;
     if (isChild) {
         return RunTests();
+    }
+    if (argc > 1 && strcmp(argv[1], "--taskbar-owner") == 0) {
+        return RunTaskbarOwner();
     }
 
     HDESK desktop = CreateDesktopW(DesktopName().c_str(), nullptr, nullptr, 0,

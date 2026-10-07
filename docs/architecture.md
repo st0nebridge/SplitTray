@@ -352,6 +352,14 @@ and frequent events are not logged (DECISIONS 44, 51).
 
 ## Starting and stopping
 
+* **Which Explorer.** Explorer can run folder windows in processes of their
+  own, and Windhawk loads the mod into every `explorer.exe`. Only the one that
+  shows the taskbar is the mod's: a taskbar window counts only if this process
+  owns it. `Wh_ModInit` refuses to load beside another process's taskbar, before
+  anything is started or written. A process loaded before any taskbar existed
+  draws no trays once the taskbar turns out to be another's. With no taskbar
+  anywhere, as while Explorer makes its own again, the trays stay
+  (DECISIONS 92).
 * **Attaching.** The tray thread is started first, and the mod attaches only
   once it is running. If it cannot start, `Wh_ModInit` fails with nothing
   attached, rather than leave icons going to trays nothing draws

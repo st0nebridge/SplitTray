@@ -1,5 +1,108 @@
 # Change Log
 
+## 2026-10-07 - Release preparation for 1.3.1
+
+**Impact:** none. Records and release tooling only; the mod is unchanged.
+
+* **Plain wording.** The test write-ups in this log, and two comments in the
+  regression suite, now call a regression test a regression test.
+* **A release scan configuration** (`.release-scan`) names the development-only
+  paths, which are left out of every published tree:
+  * `.archive/`;
+  * `docs/original-requirements.txt`;
+  * `package.json`;
+  * the configuration itself.
+
+  It also names the scan's expected findings, each with its reason:
+  * this log and `DECISIONS.md`, published as they are (DECISIONS 55);
+  * invented program paths and an invented GUID in test fixtures;
+  * Microsoft's published Windows 10 GUID in the XAML suite's manifest.
+
+## 2026-10-07 - Split Tray 1.3.1: no stray tray from a folder window's Explorer
+
+**Impact:** fix. An empty tray no longer floats on the second display beside
+the real tray 2.
+
+Reported by the user: "a floating square (an empty tray) on my second screen -
+separate from the actual second tray which has icons".
+
+**Cause, found live.**
+* Two Explorer processes were running:
+  * the one that shows the taskbar, `C:\Windows\Explorer.EXE`;
+  * one started by COM four minutes later to host folder windows,
+    `explorer.exe /factory,{75dff2b7-...} -Embedding`.
+* Windhawk loads the mod into every `explorer.exe`. In the second process,
+  `FindShellTrayWindow` (`FindWindowW`) found the first process's taskbar.
+* That process's log showed `failed to subclass Shell_TrayWnd` every two
+  seconds.
+* Its tray thread drew tray 2 as a floating panel, because no taskbar there
+  could take it. The panel was empty, because no icon reaches that process:
+  28x28 at (-36,993), the window on screen.
+* The defect is as old as the floating trays. It shows whenever Explorer
+  hosts folder windows in a process of their own.
+
+**Fix** (DECISIONS 92).
+* **Only this process's taskbar.** A taskbar window is the mod's only if its
+  own process owns it (`FindShellTrayWindows`, `WhoShowsTheTaskbar`), the test
+  other taskbar mods use.
+* **Refused at load.** `Wh_ModInit` returns `FALSE` beside another process's
+  taskbar, before anything starts or is written. So the folder window's
+  process also no longer writes the mod's stored state over the taskbar
+  process's.
+* **No trays beside another's taskbar.** A process loaded before any taskbar
+  existed, at sign-in, draws no trays once it finds the taskbar another
+  process's (`SyncFloatingTrays`). With no taskbar anywhere, as while Explorer
+  makes its own again, they stay, so the taskbar's own process behaves as
+  before.
+* **Second taskbars too.** The XAML section looks up second taskbars
+  (`FindTaskbarWindowOn`) in this process only. Their objects are read from
+  this process's memory.
+
+**Tests.**
+* **Regression:** "the taskbar is this process's only if it owns one".
+* **Integration [17c]:** a second process on the private desktop owns the
+  `Shell_TrayWnd`. The mod refuses to load beside it, with no thread, no window
+  and nothing written. Loaded before it appeared, the mod takes its trays down,
+  does not try to attach, and draws them again once no taskbar is left.
+  Before the fix this step reproduced the live log: `tray 2 floats at
+  (-36,993) 28x28`, then `failed to subclass` on every tick.
+* **XAML suite:** Explorer's own second taskbar, another process's to the
+  suite, is not found. On a machine with one display there is none, and the
+  suite says so.
+* **Mutants:** seven new ones, six in `tools/mutants_reviews.py` and one in
+  `tools/mutants_xaml.py`. All seven are killed.
+* **Totals:** 1097 regression checks at -O0 and at -O2, 403 integration
+  checks, 303 XAML checks.
+* **Coverage over the whole source:** regions 85.1%, branches 74.6%,
+  functions 90.5%, lines 85.3%.
+* **Live, in Explorer:** 1.3.1 was installed with both Explorer processes
+  running.
+  * Windhawk reloaded it in each. The folder windows' process logged the
+    refusal and no longer has the mod loaded.
+  * The empty tray went from the second display.
+  * In the taskbar's process, tray 2 embedded in the second taskbar 2 seconds
+    after loading, with SystemInformer's icons in it.
+
+**The harness's `Wh_Log` takes only a literal, as Windhawk's does.**
+* **What happened:** the first build of this fix passed all three suites, then
+  failed at the mod DLL's own compile. The call was
+  `Wh_Log(elsewhere ? L"..." : L"...")`.
+* **Why the DLL compile caught it:** when Windhawk compiles a mod, its `Wh_Log`
+  is a macro that pastes a prefix onto the format, so the format must be a
+  string literal.
+* **Why nothing earlier caught it:**
+  * The harness's `Wh_Log` was a plain function.
+  * The editor-identical check compiles with `WH_EDITING`, where Windhawk's
+    `Wh_Log` is a function too.
+* **The fix:** the harness's `Wh_Log` is now a template that takes the format
+  as an array, so a pointer is refused. That covers a variable, and a `?:`
+  between literals of different lengths.
+* **Why not a macro:** a macro, tried first, worked but took regions to 84.5%,
+  under the target. llvm-cov counts each of the mod's `Wh_Log` uses as a region
+  of its own, and nothing was tested any less.
+
+**Version** 1.3.1: a fix.
+
 ## 2026-10-02 - Split Tray 1.3.0: icons long gone are forgotten, and the XAML is tested
 
 **Impact:** new behaviour. What the mod remembers about an icon is forgotten
@@ -1404,7 +1507,7 @@ check no longer depends on the machine that runs them.
 * Compile check clean, hygiene clean, settings lint 20/20, symbols 5/5.
 * Modularity fitness 80.0 / 100, pass. It measures `tools/` only, as before.
 
-**Regression anchors**
+**Regression tests**
 
 * `Test_DestinationsNameTrays`, `Test_PlacementCodesReadWhatEveryVersionWrote`,
   `Test_EveryDisplayButThePrimaryGetsATray`,
@@ -1503,7 +1606,7 @@ the secondary taskbar read (-1920,912)-(-384,960) for that reason.
 * Modularity fitness 80.0 / 100, pass - `tools/` only, as before; `cycles` and
   `fan_out` n/a, `testability` fails.
 
-**Regression anchors**
+**Regression tests**
 
 * `Test_ParsesAnIconRectQuery`, `Test_RejectsWhatIsNotAnIconRectQuery`,
   `Test_IconRectReplyIsWhatShell32Reads`,
@@ -1615,7 +1718,7 @@ tray thread writes it (DECISIONS 21).
   `fan_out` read n/a, and `testability` fails because the tools have no
   matching test files.
 
-**Regression anchors**
+**Regression tests**
 
 * `Test_FoldKeepsWhatAPartialModifyLeavesOut`, `Test_FoldDoesNotKeepABalloon`,
   `Test_FoldAppliesStateThroughItsMask`, `Test_AnAddStartsTheRecordAfresh`,
@@ -2436,7 +2539,7 @@ which only separated the two taskbars here because the monitors happen to differ
   `?FrameHeight@TaskbarHost@@QEBAHXZ_RENAMED_BY_A_WINDOWS_UPDATE` makes it exit 1,
   print `MISS`, and name what the symbol was needed for.
 
-**Regression anchor**
+**Regression test**
 
 `tools/check-symbols.py`, run before every compile: a hooked symbol that is no
 longer in the live binaries fails the build instead of the mod.
@@ -2563,7 +2666,7 @@ code against the block, and nothing checked the block against the installer.
   correct types, including `embedInTaskbar = 1`.
 * `install.ps1` and `redeploy.ps1` both parse clean.
 
-**Regression anchor**
+**Regression test**
 
 `tools/check-settings.py`, run as the first step of every build: a declared
 scalar the installer cannot seed fails the build.
@@ -2834,7 +2937,7 @@ the tray thread and window were fine and the attach was the only broken link.
   are already on screen" and "g_unloading is not cleared on load" — each killed
   only by the integration suite, which is why it now runs in the mutation check.
 
-**Regression anchors**
+**Regression tests**
 
 * `tests/integration/mod_integration_test.cpp` phase `[11]` — the mod must attach
   to a tray window that appears *after* it loads.
@@ -2958,7 +3061,7 @@ on its first run.
     subclass, after which traffic reaches the shell directly again.
 * Regression suite still 204 checks, 0 failures; mutation check still 10/10.
 
-**Regression anchor**
+**Regression test**
 
 `tests/integration/mod_integration_test.cpp` step `[3]` — asserts that
 `Wh_ModSettingsChanged()` alone moves an existing icon and retracts it from the
@@ -3035,7 +3138,7 @@ off every screen.
   `_Z21Wh_ModSettingsChangedv`, `_Z18Wh_ModBeforeUninitv`,
   `_Z12Wh_ModUninitv`).
 
-**Regression anchors**
+**Regression tests**
 
 * `Test_ParsesRealUnicodeV4Payload`, `Test_ShellNormalisesLegacyAndAnsiCallers` —
   the record the mod must read, pinned to bytes captured from the real shell32.

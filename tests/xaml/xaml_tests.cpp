@@ -1714,6 +1714,24 @@ void Test_AnElementElsewhereIsLeftAlone() {
     CHECK(!tray->active);
 }
 
+// A second taskbar is the mod's only in its own process: its objects are read
+// from this process's memory (DECISIONS 92). The suite runs on the desktop it
+// was started on, where Explorer's second taskbars are another process's -
+// looked at, not sent anything. A machine with one display has none.
+void Test_AnotherProcesssSecondTaskbarIsNotFound() {
+    HWND explorers = FindWindowW(L"Shell_SecondaryTrayWnd", nullptr);
+    if (!explorers) {
+        printf("      no second taskbar on this desktop: nothing to look past\n");
+        return;
+    }
+    DWORD owner = 0;
+    GetWindowThreadProcessId(explorers, &owner);
+    CHECK(owner != GetCurrentProcessId());
+    HMONITOR monitor = MonitorFromWindow(explorers, MONITOR_DEFAULTTONULL);
+    CHECK(monitor != nullptr);
+    CHECK(X::FindTaskbarWindowOn(monitor) == nullptr);
+}
+
 void Test_WithoutExplorersSymbolsNothingIsHooked() {
     // A test process has no taskbar.dll or SystemTray.dll: nothing resolves,
     // nothing is hooked, and the trays float rather than embed.
@@ -1847,6 +1865,8 @@ int main() {
     runner.Run("an element loaded on a tray's taskbar anchors the tray there",
                Test_AnElementLoadedOnATraysTaskbarAnchorsTheTrayThere);
     runner.Run("an element elsewhere is left alone", Test_AnElementElsewhereIsLeftAlone);
+    runner.Run("another process's second taskbar is not found",
+               Test_AnotherProcesssSecondTaskbarIsNotFound);
     runner.Run("without Explorer's symbols nothing is hooked",
                Test_WithoutExplorersSymbolsNothingIsHooked);
 

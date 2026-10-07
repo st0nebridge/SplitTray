@@ -618,7 +618,7 @@ void Test_ExtraTraysComeAfterTheDisplaysAndKeepTheirNumbers() {
 }
 
 void Test_ADisabledExtraTrayKeepsItsNumberButIsNotThere() {
-    // Regression anchor: an extra tray can be switched off and its entry kept -
+    // Regression test: an extra tray can be switched off and its entry kept -
     // the user's test tray on the primary display. It is not shown, and like an
     // extra tray whose display is missing it keeps its number, so the trays
     // after it do not shift and icons placed in them stay put.
@@ -776,7 +776,7 @@ void Test_ADisplayThatBecomesThePrimaryGivesUpItsTray() {
 }
 
 void Test_TrayLandsInsideAMonitorAtNegativeCoordinates() {
-    // Regression anchor: the previous build assumed the secondary display was to
+    // Regression test: the previous build assumed the secondary display was to
     // the right of the primary and placed its window at x=3620, off every screen.
     Settings s = DefaultSettings();
     const TrayLayout layout = ComputeLayout(kSecondaryWorkArea, 5, s, 96);
@@ -2533,6 +2533,21 @@ void Test_OnlyAsksAppsToReRegisterWhenExplorerWillNot() {
     // Unless the announcement went out before the mod was watching.
     CHECK(ShouldAskAppsToReRegister(false, true, true));
     CHECK(ShouldAskAppsToReRegister(true, false, true));
+}
+
+// Explorer runs folder windows in processes of their own, and Windhawk loads
+// the mod into every one. Only the process that shows the taskbar is the
+// mod's: one that found the taskbar in another drew tray 2 again, empty,
+// floating beside the real one.
+void Test_TheTaskbarIsThisProcessesOnlyIfItOwnsOne() {
+    constexpr DWORD self = 40;
+    CHECK(WhoShowsTheTaskbar({}, self) == TaskbarShownBy::Nobody);
+    CHECK(WhoShowsTheTaskbar({self}, self) == TaskbarShownBy::ThisProcess);
+    CHECK(WhoShowsTheTaskbar({12}, self) == TaskbarShownBy::AnotherProcess);
+    // Its own, wherever it comes among the windows of that class.
+    CHECK(WhoShowsTheTaskbar({12, self}, self) == TaskbarShownBy::ThisProcess);
+    CHECK(WhoShowsTheTaskbar({self, 12}, self) == TaskbarShownBy::ThisProcess);
+    CHECK(WhoShowsTheTaskbar({12, 13}, self) == TaskbarShownBy::AnotherProcess);
 }
 
 void Test_FileNameOfHandlesEveryShape() {
@@ -4891,6 +4906,8 @@ int main() {
                Test_PuttingAnIconBackReplaysItsVersionToo);
     runner.Run("asks apps to re-register only when Explorer will not",
                Test_OnlyAsksAppsToReRegisterWhenExplorerWillNot);
+    runner.Run("the taskbar is this process's only if it owns one",
+               Test_TheTaskbarIsThisProcessesOnlyIfItOwnsOne);
     runner.Run("multiple icons per window stay distinct",
                Test_MultipleIconsFromTheSameWindowAreDistinct);
     runner.Run("settings change moves icons between trays",

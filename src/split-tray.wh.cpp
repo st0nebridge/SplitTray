@@ -2,7 +2,7 @@
 // @id              split-tray
 // @name            Split Tray
 // @description     A notification area on every display's taskbar: choose, per application, which tray its icon shows in
-// @version         1.3.0
+// @version         1.3.1
 // @author          Brandon Stonebridge
 // @github          https://github.com/st0nebridge
 // @homepage        https://github.com/st0nebridge/SplitTray
@@ -2277,6 +2277,62 @@ constexpr PCWSTR kFloatingClassName = L"SplitTrayFloatingTray";
 constexpr PCWSTR kArrangeClassName = L"SplitTrayArrangeWindow";
 
 // ---------------------------------------------------------------------------
+// Which Explorer shows the taskbar
+//
+// Explorer runs folder windows in processes of their own - every one, or only
+// some, opened through COM as `explorer.exe /factory,{...} -Embedding` - and
+// Windhawk loads the mod into each. Only the process that shows the taskbar is
+// the mod's. Another took the taskbar it found for its own: it tried and failed
+// to attach to that process's window every two seconds, and drew its trays - a
+// second tray 2, empty, floating beside the real one (DECISIONS 92).
+// ---------------------------------------------------------------------------
+
+enum class TaskbarShownBy { Nobody, ThisProcess, AnotherProcess };
+
+// Pure: from the process of every Shell_TrayWnd on the desktop.
+TaskbarShownBy WhoShowsTheTaskbar(const std::vector<DWORD>& owners, DWORD self) {
+    if (owners.empty()) {
+        return TaskbarShownBy::Nobody;
+    }
+    return std::find(owners.begin(), owners.end(), self) != owners.end()
+               ? TaskbarShownBy::ThisProcess
+               : TaskbarShownBy::AnotherProcess;
+}
+
+struct ShellTrayWindows {
+    std::vector<DWORD> owners;
+    HWND own = nullptr;  // this process's, if it has one
+};
+
+ShellTrayWindows FindShellTrayWindows() {
+    ShellTrayWindows found;
+    const DWORD self = GetCurrentProcessId();
+    HWND wnd = nullptr;
+    // Bounded: windows reordered while they are walked could in principle
+    // lead the walk round again.
+    for (int i = 0; i < 32; i++) {
+        wnd = FindWindowExW(nullptr, wnd, L"Shell_TrayWnd", nullptr);
+        if (!wnd) {
+            break;
+        }
+        DWORD owner = 0;
+        GetWindowThreadProcessId(wnd, &owner);
+        found.owners.push_back(owner);
+        if (owner == self && !found.own) {
+            found.own = wnd;
+        }
+    }
+    return found;
+}
+
+TaskbarShownBy TaskbarShownNow() {
+    return WhoShowsTheTaskbar(FindShellTrayWindows().owners, GetCurrentProcessId());
+}
+
+// Whether the last pass found the taskbar another process's. Tray thread only.
+bool g_taskbarElsewhere = false;
+
+// ---------------------------------------------------------------------------
 // The mod's window classes
 //
 // A window class outlives the module that registered it: Windows does not
@@ -3882,6 +3938,19 @@ void SyncFloatingTrays() {
         onTop = g_settings.alwaysOnTop;
         tooltips = g_settings.showTooltips;
     }
+    // None in an Explorer that does not show the taskbar: one loaded before
+    // the taskbar existed finds out only now. With no taskbar anywhere - while
+    // Explorer makes its own again - they stay.
+    const bool elsewhere = TaskbarShownNow() == TaskbarShownBy::AnotherProcess;
+    if (elsewhere != g_taskbarElsewhere) {
+        g_taskbarElsewhere = elsewhere;
+        Wh_Log(L"%s", elsewhere ? L"the taskbar belongs to another process: this "
+                                  L"Explorer draws no trays"
+                                : L"no other process shows the taskbar now");
+    }
+    if (elsewhere) {
+        layouts.clear();
+    }
 
     for (auto it = g_floatingTrays.begin(); it != g_floatingTrays.end();) {
         if (layouts.count(it->first)) {
@@ -4071,6 +4140,7 @@ DWORD WINAPI TrayThreadProc(LPVOID) {
 
     g_trayWnd.store(hWnd);
     g_trayThreadState.store(TrayThreadState::Running);
+    g_taskbarElsewhere = false;
     SyncFloatingTrays();
 
     // Cheap watchdog: prunes icons whose owner died, notices display changes that
@@ -6259,10 +6329,12 @@ LRESULT CALLBACK ShellTrayWndSubclassProc(HWND hWnd,
 
 void RequestIconRepopulation();
 
-// Finds the tray window that shell32 targets. Secondary taskbars use the class
-// Shell_SecondaryTrayWnd and never receive notification-area messages.
+// Finds the tray window that shell32 targets, if it is this process's: one in
+// another Explorer is not the mod's to attach to (DECISIONS 92). Secondary
+// taskbars use the class Shell_SecondaryTrayWnd and never receive
+// notification-area messages.
 HWND FindShellTrayWindow() {
-    return FindWindowW(L"Shell_TrayWnd", nullptr);
+    return FindShellTrayWindows().own;
 }
 
 // Returns true only when this call attached to a tray window the mod was not
@@ -7073,6 +7145,13 @@ HWND FindTaskbarWindowOn(HMONITOR monitor) {
             WCHAR className[64] = {};
             GetClassNameW(wnd, className, ARRAYSIZE(className));
             if (_wcsicmp(className, L"Shell_SecondaryTrayWnd") != 0) {
+                return TRUE;
+            }
+            // Its objects are read from this process's memory, so only this
+            // process's taskbar will do (DECISIONS 92).
+            DWORD owner = 0;
+            GetWindowThreadProcessId(wnd, &owner);
+            if (owner != GetCurrentProcessId()) {
                 return TRUE;
             }
             if (MonitorFromWindow(wnd, MONITOR_DEFAULTTONULL) == search->wanted) {
@@ -9362,6 +9441,16 @@ using namespace SplitTray;
 
 BOOL Wh_ModInit() {
     Wh_Log(L"Split Tray initialising");
+
+    // An Explorer that shows folder windows only, beside the one that shows
+    // the taskbar: refused before anything starts or is written (DECISIONS 92).
+    // One loaded before there was a taskbar draws nothing once it finds it is
+    // another's (SyncFloatingTrays).
+    if (TaskbarShownNow() == TaskbarShownBy::AnotherProcess) {
+        Wh_Log(L"the taskbar belongs to another process: this Explorer shows folder "
+               L"windows only, and Split Tray stays out of it");
+        return FALSE;
+    }
 
     // Cleared explicitly rather than relying on the initial value: Windhawk can
     // load a mod again in the same process after an unload, and a stale flag would

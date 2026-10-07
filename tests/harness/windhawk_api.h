@@ -19,7 +19,7 @@
 #include <vector>
 
 #define WH_MOD_ID L"split-tray-test"
-#define WH_MOD_VERSION L"1.3.0"
+#define WH_MOD_VERSION L"1.3.1"
 
 namespace SplitTrayTestHarness {
 
@@ -85,7 +85,7 @@ inline std::wstring FormatName(PCWSTR format, va_list args) {
 
 }  // namespace SplitTrayTestHarness
 
-inline void Wh_Log(PCWSTR format, ...) {
+inline void HarnessWh_Log(PCWSTR format, ...) {
     va_list args;
     va_start(args, format);
     wchar_t buffer[1024];
@@ -97,6 +97,19 @@ inline void Wh_Log(PCWSTR format, ...) {
     if (SplitTrayTestHarness::LogToStdout()) {
         wprintf(L"    [mod] %ls\n", buffer);
     }
+}
+
+// The format as an array, which a string literal is. Windhawk's Wh_Log, when it
+// compiles the mod, is a macro that pastes a prefix onto the format, so only a
+// literal compiles; a plain function here let `Wh_Log(cond ? L"a" : L"bc", ...)`
+// through every suite, and only the DLL's own compile, last in the build,
+// refused it. A pointer is refused here too - a variable, or `?:` between
+// literals of different lengths. Not a macro: coverage counts every use of a
+// macro as a region of its own, which took regions under target with nothing
+// tested less.
+template <size_t N, typename... Args>
+void Wh_Log(const wchar_t (&format)[N], Args... args) {
+    HarnessWh_Log(format, args...);
 }
 
 inline int Wh_GetIntSetting(PCWSTR valueName, ...) {

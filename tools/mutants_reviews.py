@@ -415,4 +415,43 @@ def review_mutants(UNIT_SUITE, INTEGRATION_SUITE):
             "    }\n\n    const auto monitors",
             (INTEGRATION_SUITE,),
         ),
+        # --- only the Explorer that shows the taskbar (DECISIONS 92) -----------
+        (
+            "a process never takes the taskbar for its own",
+            "    return std::find(owners.begin(), owners.end(), self) != owners.end()",
+            "    return false",
+            (UNIT_SUITE,),
+        ),
+        (
+            "no taskbar anywhere is taken for another process's",
+            "    if (owners.empty()) {\n        return TaskbarShownBy::Nobody;\n    }\n",
+            "",
+            (UNIT_SUITE,),
+        ),
+        (
+            "another process's taskbar is attached to",
+            "        if (owner == self && !found.own) {",
+            "        if (!found.own) {",
+            (INTEGRATION_SUITE,),
+        ),
+        (
+            "the mod loads beside another process's taskbar",
+            "    if (TaskbarShownNow() == TaskbarShownBy::AnotherProcess) {\n"
+            "        Wh_Log(L\"the taskbar belongs to another process: this Explorer shows",
+            "    if (false) {\n"
+            "        Wh_Log(L\"the taskbar belongs to another process: this Explorer shows",
+            (INTEGRATION_SUITE,),
+        ),
+        (
+            "trays are drawn beside another process's taskbar",
+            "    if (elsewhere) {\n        layouts.clear();\n    }",
+            "",
+            (INTEGRATION_SUITE,),
+        ),
+        (
+            "trays are taken down with no taskbar anywhere",
+            "    const bool elsewhere = TaskbarShownNow() == TaskbarShownBy::AnotherProcess;",
+            "    const bool elsewhere = TaskbarShownNow() != TaskbarShownBy::ThisProcess;",
+            (INTEGRATION_SUITE,),
+        ),
     ]

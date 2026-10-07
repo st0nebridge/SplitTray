@@ -237,4 +237,11 @@ def xaml_mutants(XAML_SUITE):
             "    if (g_unloading.load() || g_embeddedTrays.empty()) {\n        return;\n    }",
             (XAML_SUITE,),
         ),
+        (
+            "another process's second taskbar is taken for this one's",
+            "            if (owner != GetCurrentProcessId()) {\n                return TRUE;\n"
+            "            }\n            if (MonitorFromWindow(wnd, MONITOR_DEFAULTTONULL)",
+            "            if (MonitorFromWindow(wnd, MONITOR_DEFAULTTONULL)",
+            (XAML_SUITE,),
+        ),
     ]

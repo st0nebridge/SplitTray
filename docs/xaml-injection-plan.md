@@ -86,11 +86,14 @@ every alpha byte comes back zero the alpha is rebuilt from the mask. The result
 is premultiplied, which is what `WriteableBitmap` expects - handing it straight
 alpha leaves a dark fringe on every anti-aliased edge.
 
-To collect the dump:
+To collect the dump, set `g_dumpXamlTree` to `true` in the source - it was a
+setting until 1.3.3 - and run:
 
 ```powershell
-toolsedeploy.ps1 -DumpXamlTree -Seconds 40
+tools\redeploy.ps1 -Seconds 40
 ```
+
+and set it back afterwards.
 
 It prints the tray frame subtree of **both** taskbars: the primary one is the
 reference, since it is the only one with a real notification area and therefore

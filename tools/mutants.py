@@ -8,6 +8,7 @@ growing with it.
 
 from mutants_access import access_mutants
 from mutants_audit import audit_mutants
+from mutants_catalog import catalog_mutants
 from mutants_parity import parity_mutants
 from mutants_reviews import review_mutants
 from mutants_xaml import xaml_mutants
@@ -323,3 +324,4 @@ MUTANTS += audit_mutants(UNIT_SUITE, INTEGRATION_SUITE)
 MUTANTS += parity_mutants(UNIT_SUITE, INTEGRATION_SUITE)
 MUTANTS += access_mutants(UNIT_SUITE, INTEGRATION_SUITE)
 MUTANTS += xaml_mutants(XAML_SUITE)
+MUTANTS += catalog_mutants(UNIT_SUITE, INTEGRATION_SUITE, XAML_SUITE)

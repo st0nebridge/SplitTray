@@ -19,7 +19,7 @@
 #include <vector>
 
 #define WH_MOD_ID L"split-tray-test"
-#define WH_MOD_VERSION L"1.3.2"
+#define WH_MOD_VERSION L"1.3.3"
 
 namespace SplitTrayTestHarness {
 
@@ -178,6 +178,12 @@ inline BOOL Wh_SetFunctionHook(void*, void*, void**) {
     return TRUE;
 }
 
+inline int& ApplyHookOperationsCallCount() {
+    static int count = 0;
+    return count;
+}
+
 inline BOOL Wh_ApplyHookOperations() {
+    ApplyHookOperationsCallCount()++;
     return TRUE;
 }

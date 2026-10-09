@@ -1069,7 +1069,7 @@ void ResetStore(const Settings& settings, bool secondaryAvailable) {
     SplitTrayTestHarness::StoredValues().clear();
     g_displaySlots.clear();
     g_displaySlotsLoaded = false;
-    RecomputeGeometryLocked();
+    RecomputeGeometryLocked(g_enumerateMonitors());
     g_placements.clear();
     g_placementsLoaded = false;
     g_hidden.clear();
@@ -2113,7 +2113,7 @@ void Test_ARuleCanSendAnIconToAnyTray() {
     std::lock_guard<std::mutex> lock(g_mutex);
     CHECK_EQ(static_cast<int>(IconsInTrayLocked(2).size()), 1);
     CHECK_EQ(static_cast<int>(IconsInTrayLocked(3).size()), 1);
-    RecomputeGeometryLocked();
+    RecomputeGeometryLocked(g_enumerateMonitors());
     // Each floating tray is laid out on its own display, at its own corner.
     CHECK(g_floatingLayouts.count(2) == 1);
     CHECK(g_floatingLayouts.count(3) == 1);
@@ -2127,7 +2127,7 @@ void Test_ARuleCanSendAnIconToAnyTray() {
 void Test_AnEmptyFloatingTrayStillHasAHandle() {
     ResetStore(ThreeTraySettings(), true);
     std::lock_guard<std::mutex> lock(g_mutex);
-    RecomputeGeometryLocked();
+    RecomputeGeometryLocked(g_enumerateMonitors());
     // Nothing routed there yet, and still somewhere to click for the menu.
     CHECK(g_floatingLayouts.count(3) == 1);
     CHECK_EQ(g_floatingLayouts[3].columns, 1);
@@ -2204,7 +2204,7 @@ void Test_TrayNumbersAreRememberedAcrossRestarts() {
     g_enumerateMonitors = [] { return std::vector<MonitorInfoEntry>{kLeft, kMiddle, kMain}; };
     {
         std::lock_guard<std::mutex> lock(g_mutex);
-        RecomputeGeometryLocked();
+        RecomputeGeometryLocked(g_enumerateMonitors());
     }
     CHECK(!SplitTrayTestHarness::StoredValues()[L"displaySlots"].empty());
 
@@ -2214,7 +2214,7 @@ void Test_TrayNumbersAreRememberedAcrossRestarts() {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_displaySlots.clear();
         g_displaySlotsLoaded = false;
-        RecomputeGeometryLocked();
+        RecomputeGeometryLocked(g_enumerateMonitors());
         const TrayTarget* two = FindTrayLocked(2);
         const TrayTarget* three = FindTrayLocked(3);
         CHECK(two && !two->available);
@@ -3570,6 +3570,183 @@ void Test_OnlyAKnownTaskbarHostLayoutIsUsed() {
     CHECK(!ElementOffsetFromFrameHeight(nullptr, &offset));
 }
 
+void Test_SystemTraysSymbolsAreResolvedOnlyWhenItIsLoadedToRun() {
+    // From Windhawk's catalog review: SystemTray.dll is resolved as Explorer
+    // loads it, by a hook on every LoadLibraryExW until then. Only its own
+    // load, and only one that will run it, is the one to resolve.
+    HMODULE systemTray = reinterpret_cast<HMODULE>(static_cast<uintptr_t>(0x7FF810000000));
+    HMODULE other = reinterpret_cast<HMODULE>(static_cast<uintptr_t>(0x7FF820000000));
+    CHECK(IsSystemTrayLoad(systemTray, 0, systemTray));
+    CHECK(IsSystemTrayLoad(systemTray, LOAD_LIBRARY_SEARCH_SYSTEM32, systemTray));
+    CHECK(!IsSystemTrayLoad(other, 0, systemTray));
+    CHECK(!IsSystemTrayLoad(systemTray, LOAD_LIBRARY_AS_DATAFILE, systemTray));
+    CHECK(!IsSystemTrayLoad(systemTray, LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE, systemTray));
+    CHECK(!IsSystemTrayLoad(systemTray, LOAD_LIBRARY_AS_IMAGE_RESOURCE, systemTray));
+    // A load that failed, before SystemTray.dll is there, is not it.
+    CHECK(!IsSystemTrayLoad(nullptr, 0, nullptr));
+    CHECK(!IsSystemTrayLoad(other, 0, nullptr));
+}
+
+// The test displays, noting each time they are asked for while g_mutex is held:
+// a thread of its own cannot take it then.
+std::atomic<int> g_displaysAsked{0};
+std::atomic<int> g_displaysAskedUnderLock{0};
+
+std::vector<MonitorInfoEntry> TestMonitorsNotingTheLock() {
+    g_displaysAsked++;
+    bool held = false;
+    std::thread probe([&held] {
+        if (g_mutex.try_lock()) {
+            g_mutex.unlock();
+        } else {
+            held = true;
+        }
+    });
+    probe.join();
+    if (held) {
+        g_displaysAskedUnderLock++;
+    }
+    return TestMonitors();
+}
+
+void Test_TheDisplaysAreAskedForWithoutHoldingTheLock() {
+    // From Windhawk's catalog review. Every two seconds the tray thread asked
+    // Windows for the displays - a call or two per display - twice, holding
+    // the lock that every application's tray message waits on, on the
+    // taskbar's thread; so did moving an icon and a change of settings.
+    ForgetPlacements();
+    ResetStore(DefaultSettings(), true);
+    g_enumerateMonitors = TestMonitorsNotingTheLock;
+    g_displaysAsked = 0;
+    g_displaysAskedUnderLock = 0;
+
+    ReplayRoutingChanges();
+    ApplySettingsToTrackedIcons();
+    MoveIconToTray(L"moved.exe#1", Destination::Secondary);
+    SyncFloatingTrays();
+    DestroyFloatingTrays();
+
+    CHECK(g_displaysAsked.load() >= 4);
+    CHECK_EQ(g_displaysAskedUnderLock.load(), 0);
+    g_enumerateMonitors = TestMonitors;
+    ForgetPlacements();
+}
+
+void Test_ATrayThatCannotBeEmbeddedIsLookedForLessOften() {
+    // From Windhawk's catalog review. While a display's tray waited to go into
+    // its taskbar, the taskbar's thread was asked to walk its elements every
+    // two seconds; a tray row a Windows update had changed was looked for that
+    // way for as long as Explorer ran. Every tick for the first ten seconds,
+    // then every thirty.
+    std::vector<int> due;
+    for (int tick = 0; tick <= 46; tick++) {
+        if (AttachDueAfter(tick)) {
+            due.push_back(tick);
+        }
+    }
+    CHECK(due == (std::vector<int>{0, 1, 2, 3, 4, 15, 30, 45}));
+}
+
+void Test_TheArrangeWindowIsSizedForItsDisplay() {
+    // From Windhawk's catalog review: the arrange window was laid out in
+    // fixed pixels, so it came out small on a display at 150%.
+    const ArrangeMetrics at96 = ArrangeMetricsFor(96);
+    CHECK_EQ(at96.margin, 12);
+    CHECK_EQ(at96.listWidth, 250);
+    CHECK_EQ(at96.columnWidth, 226);
+    CHECK_EQ(at96.height, 460);
+    CHECK_EQ(at96.labelHeight, 20);
+    CHECK_EQ(at96.hintHeight, 52);
+    CHECK_EQ(at96.icon, 16);
+    const ArrangeMetrics at144 = ArrangeMetricsFor(144);
+    CHECK_EQ(at144.margin, 18);
+    CHECK_EQ(at144.listWidth, 375);
+    CHECK_EQ(at144.columnWidth, 339);
+    CHECK_EQ(at144.height, 690);
+    CHECK_EQ(at144.labelHeight, 30);
+    CHECK_EQ(at144.hintHeight, 78);
+    CHECK_EQ(at144.icon, 24);
+}
+
+// Instructions as they sit in memory, little-endian.
+std::vector<BYTE> Arm64Code(std::initializer_list<DWORD> instructions) {
+    std::vector<BYTE> code(instructions.size() * sizeof(DWORD));
+    size_t at = 0;
+    for (DWORD instruction : instructions) {
+        memcpy(&code[at], &instruction, sizeof(instruction));
+        at += sizeof(instruction);
+    }
+    return code;
+}
+
+void Test_OnArm64TheTaskbarHostLayoutIsReadFromItsOwnInstructions() {
+    // From Windhawk's catalog review. On an ARM64 PC the mod is built for
+    // ARM64, where FrameHeight begins with ARM64 instructions: only the x64
+    // ones were known, so no display's tray was ever put in its taskbar. The
+    // pattern is the one taskbar-multirow reads:
+    //   pacibsp / stp fp, lr, [sp, #-0x10]! / mov fp, sp / ldr x8, [x0, #nn]!
+    constexpr DWORD kPacibsp = 0xD503237F;
+    constexpr DWORD kSaveFrame = 0xA9BF7BFD;
+    constexpr DWORD kSetFrame = 0x910003FD;
+    const auto known = Arm64Code({kPacibsp, kSaveFrame, kSetFrame, 0xF8410C08});
+    size_t offset = 0;
+    CHECK(ElementOffsetFromFrameHeightArm64(known.data(), &offset));
+    CHECK_EQ(offset, static_cast<size_t>(0x10));
+
+    // Another offset, and another frame size, are the same layout.
+    offset = 0;
+    CHECK(ElementOffsetFromFrameHeightArm64(
+        Arm64Code({kPacibsp, kSaveFrame, kSetFrame, 0xF8448C08}).data(), &offset));
+    CHECK_EQ(offset, static_cast<size_t>(0x48));
+    offset = 0;
+    CHECK(ElementOffsetFromFrameHeightArm64(
+        Arm64Code({kPacibsp, 0xA9BE7BFD, kSetFrame, 0xF8410C08}).data(), &offset));
+    CHECK_EQ(offset, static_cast<size_t>(0x10));
+
+    // Anything else is "no", and the offset is left alone.
+    const std::vector<std::vector<BYTE>> others = {
+        // the load is from x1, not the object
+        Arm64Code({kPacibsp, kSaveFrame, kSetFrame, 0xF8410C28}),
+        // after the load rather than before it
+        Arm64Code({kPacibsp, kSaveFrame, kSetFrame, 0xF8410408}),
+        // a negative offset
+        Arm64Code({kPacibsp, kSaveFrame, kSetFrame, 0xF85F0C08}),
+        // a 32-bit load
+        Arm64Code({kPacibsp, kSaveFrame, kSetFrame, 0xB8410C08}),
+        // no pointer authentication
+        Arm64Code({0xD503201F, kSaveFrame, kSetFrame, 0xF8410C08}),
+        // another register pair saved
+        Arm64Code({kPacibsp, 0xA9BF53F3, kSetFrame, 0xF8410C08}),
+        // the frame pointer not set
+        Arm64Code({kPacibsp, kSaveFrame, 0xD503201F, 0xF8410C08}),
+    };
+    for (const auto& other : others) {
+        offset = 0x77;
+        CHECK(!ElementOffsetFromFrameHeightArm64(other.data(), &offset));
+        CHECK_EQ(offset, static_cast<size_t>(0x77));
+    }
+    CHECK(!ElementOffsetFromFrameHeightArm64(nullptr, &offset));
+    CHECK(!ElementOffsetFromFrameHeightArm64(known.data(), nullptr));
+
+    // Each architecture's decoder knows only its own instructions.
+    const BYTE x64[] = {0x48, 0x83, 0xEC, 0x28, 0x48, 0x83, 0xC1, 0x48,
+                        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
+    CHECK(!ElementOffsetFromFrameHeightArm64(x64, &offset));
+    CHECK(!ElementOffsetFromFrameHeightX64(known.data(), &offset));
+    CHECK(ElementOffsetFromFrameHeightX64(x64, &offset));
+
+    // The mod reads with the decoder for the architecture it was built for.
+    offset = 0;
+#if defined(_M_ARM64) || defined(__aarch64__)
+    CHECK(ElementOffsetFromFrameHeight(known.data(), &offset));
+    CHECK_EQ(offset, static_cast<size_t>(0x10));
+#else
+    CHECK(!ElementOffsetFromFrameHeight(known.data(), &offset));
+    CHECK(ElementOffsetFromFrameHeight(x64, &offset));
+    CHECK_EQ(offset, static_cast<size_t>(0x48));
+#endif
+}
+
 // From an external review. The way into the taskbar reads Explorer's private
 // objects at offsets nothing promises. After a Windows update one of those reads
 // could land on memory that is not there, and a fault inside Explorer takes the
@@ -3843,11 +4020,14 @@ bool WithinSeconds(Condition condition) {
     return true;
 }
 
-void Test_UnloadingWaitsForATaskbarThatDoesNotAnswerOnlyItsTime() {
-    // DECISIONS 73. The hand-back was asked for with SendMessageW before the
-    // wait for it began, so a taskbar thread that did not answer held
-    // unloading for as long as it did not, and the wait never started. Taking
-    // the subclass off from there is a message that thread has to answer too.
+void Test_UnloadingWaitsForABusyTaskbarUntilItIsDone() {
+    // From Windhawk's catalog review, replacing DECISIONS 73's time limit.
+    // Windhawk frees the module as soon as Wh_ModUninit returns, so unloading
+    // may not end before the mod's work on the taskbar's thread has: it used
+    // to give up after a few seconds and keep the module loaded for the rest
+    // of Explorer's life instead. A thread that is busy is waited for, the
+    // hand-back is done there once it answers, and the subclass taken off
+    // there - all before unloading ends.
     ForgetPlacements();
     ResetStore(DefaultSettings(), true);
     TestTaskbar taskbar;
@@ -3856,8 +4036,6 @@ void Test_UnloadingWaitsForATaskbarThatDoesNotAnswerOnlyItsTime() {
                                                         ShellTrayWndSubclassProc, 0));
     g_taskbarRelease = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     g_taskbarHeld = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    const DWORD budget = g_taskbarWaitMs;
-    g_taskbarWaitMs = 200;
     g_shellTrayWnd.store(taskbar.wnd);
     g_unloading.store(true);
     g_handedBack.store(false);
@@ -3868,38 +4046,40 @@ void Test_UnloadingWaitsForATaskbarThatDoesNotAnswerOnlyItsTime() {
 
     const int removals = WindhawkUtils::UnsubclassCallCount();
     std::atomic<bool> returned{false};
-    bool done = true;
     std::thread unloading([&] {
-        done = HandBackToShell();
+        HandBackToShell();
         returned.store(true);
     });
-    CHECK(WithinSeconds([&] { return returned.load(); }));
+    // Longer than the time limit unloading used to keep to.
+    Sleep(600);
+    CHECK(!returned.load());
+    CHECK(!g_handedBack.load());
     CHECK_EQ(WindhawkUtils::UnsubclassCallCount(), removals);
 
-    // Once the thread answers, the hand-back asked for is done there, and the
-    // subclass taken off there: the module was kept loaded for it.
     SetEvent(g_taskbarRelease);
+    CHECK(WithinSeconds([&] { return returned.load(); }));
     unloading.join();
-    CHECK(!done);
-    CHECK(WithinSeconds([] { return g_handedBack.load(); }));
-    CHECK(WithinSeconds(
-        [&] { return WindhawkUtils::UnsubclassCallCount() == removals + 1; }));
+    // Done by the time unloading ended, not after.
+    CHECK(g_handedBack.load());
+    CHECK_EQ(WindhawkUtils::UnsubclassCallCount(), removals + 1);
+    CHECK(g_shellTrayWnd.load() == nullptr);
 
     StopTestTaskbar(&taskbar);
     CloseHandle(g_taskbarRelease);
     CloseHandle(g_taskbarHeld);
     g_taskbarRelease = nullptr;
     g_taskbarHeld = nullptr;
-    g_taskbarWaitMs = budget;
     g_unloading.store(false);
     g_handedBack.store(false);
 }
 
 void Test_UnloadingEndsOnlyOnceTheModsCodeHasLeftTheTaskbarsThread() {
-    // DECISIONS 73. The icons being back is not enough. Explorer may run a
-    // message loop inside a message the mod's subclass passed on to it - a
-    // menu, say - and the hand-back is then done inside that loop, with a call
-    // of the subclass still under way below it. The module has to outlast it.
+    // DECISIONS 73, without its time limit (from Windhawk's catalog review).
+    // The icons being back is not enough. Explorer may run a message loop
+    // inside a message the mod's subclass passed on to it - a menu, say - and
+    // the hand-back is then done inside that loop, with a call of the
+    // subclass still under way below it. Unloading waits for that call to
+    // return, however long the loop runs.
     ForgetPlacements();
     ResetStore(DefaultSettings(), true);
     TestTaskbar taskbar;
@@ -3908,25 +4088,32 @@ void Test_UnloadingEndsOnlyOnceTheModsCodeHasLeftTheTaskbarsThread() {
                                                         ShellTrayWndSubclassProc, 0));
     g_taskbarRelease = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     g_taskbarLooping = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    const DWORD budget = g_taskbarWaitMs;
-    g_taskbarWaitMs = 300;
     g_shellTrayWnd.store(taskbar.wnd);
     g_unloading.store(true);
     g_handedBack.store(false);
     PostMessageW(taskbar.wnd, kLoopUntilReleased, 0, 0);
     CHECK(WaitForSingleObject(g_taskbarLooping, 3000) == WAIT_OBJECT_0);
 
-    CHECK(!HandBackToShell());
-    CHECK(g_handedBack.load());  // done, inside the loop
+    std::atomic<bool> returned{false};
+    std::thread unloading([&] {
+        HandBackToShell();
+        returned.store(true);
+    });
+    CHECK(WithinSeconds([] { return g_handedBack.load(); }));  // inside the loop
+    Sleep(600);
+    CHECK(!returned.load());
+    CHECK(g_subclassDepth.load() > 0);
+
     SetEvent(g_taskbarRelease);
-    CHECK(WithinSeconds([] { return g_subclassDepth.load() == 0; }));
+    CHECK(WithinSeconds([&] { return returned.load(); }));
+    unloading.join();
+    CHECK_EQ(g_subclassDepth.load(), 0);
 
     StopTestTaskbar(&taskbar);
     CloseHandle(g_taskbarRelease);
     CloseHandle(g_taskbarLooping);
     g_taskbarRelease = nullptr;
     g_taskbarLooping = nullptr;
-    g_taskbarWaitMs = budget;
     g_unloading.store(false);
     g_handedBack.store(false);
 }
@@ -4998,6 +5185,16 @@ int main() {
                Test_TrayCallbacksAreWhatExplorerSends);
     runner.Run("only a known TaskbarHost layout is used",
                Test_OnlyAKnownTaskbarHostLayoutIsUsed);
+    runner.Run("on ARM64 the TaskbarHost layout is read from its own instructions",
+               Test_OnArm64TheTaskbarHostLayoutIsReadFromItsOwnInstructions);
+    runner.Run("SystemTray.dll is resolved only when it is loaded to run",
+               Test_SystemTraysSymbolsAreResolvedOnlyWhenItIsLoadedToRun);
+    runner.Run("the displays are asked for without holding the lock",
+               Test_TheDisplaysAreAskedForWithoutHoldingTheLock);
+    runner.Run("a tray that cannot be embedded is looked for less often",
+               Test_ATrayThatCannotBeEmbeddedIsLookedForLessOften);
+    runner.Run("the arrange window is sized for its display",
+               Test_TheArrangeWindowIsSizedForItsDisplay);
     runner.Run("private memory is read without faulting",
                Test_PrivateMemoryIsReadWithoutFaulting);
     runner.Run("a sub-object is found only where it is",
@@ -5052,8 +5249,8 @@ int main() {
                Test_TheModAttachesOnlyOnceItsTrayThreadRuns);
 
     printf("\nfindings from the code audit of 2026-09-24\n");
-    runner.Run("unloading waits for a taskbar that does not answer only its time",
-               Test_UnloadingWaitsForATaskbarThatDoesNotAnswerOnlyItsTime);
+    runner.Run("unloading waits for a busy taskbar until it is done",
+               Test_UnloadingWaitsForABusyTaskbarUntilItIsDone);
     runner.Run("unloading ends only once the mod's code has left the taskbar's thread",
                Test_UnloadingEndsOnlyOnceTheModsCodeHasLeftTheTaskbarsThread);
     runner.Run("an add that is taken starts the icon at version 0",

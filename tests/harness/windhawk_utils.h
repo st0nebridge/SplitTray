@@ -196,4 +196,21 @@ inline bool HookSymbols(HMODULE, const SYMBOL_HOOK*, size_t) {
     return false;
 }
 
+// Function hooks: counted, so the XAML suite can see which the mod asks for.
+// Nothing is hooked in a test process.
+inline int& SetFunctionHookCallCount() {
+    static int count = 0;
+    return count;
+}
+
+template <typename Prototype>
+BOOL SetFunctionHook(Prototype* targetFunction,
+                     Prototype* hookFunction,
+                     Prototype** originalFunction) {
+    SetFunctionHookCallCount()++;
+    return Wh_SetFunctionHook(reinterpret_cast<void*>(targetFunction),
+                              reinterpret_cast<void*>(hookFunction),
+                              reinterpret_cast<void**>(originalFunction));
+}
+
 }  // namespace WindhawkUtils

@@ -185,8 +185,8 @@ def review_mutants(UNIT_SUITE, INTEGRATION_SUITE):
         ),
         (
             "a mod loaded again still thinks its icons were handed back last time",
-            "    g_handedBack.store(false);\n    g_handBackStuck = false;\n",
-            "    g_handBackStuck = false;\n",
+            "    g_unloading.store(false);\n    g_handedBack.store(false);\n",
+            "    g_unloading.store(false);\n",
             (INTEGRATION_SUITE,),
         ),
         (
@@ -220,10 +220,11 @@ def review_mutants(UNIT_SUITE, INTEGRATION_SUITE):
             (UNIT_SUITE,),
         ),
         (
-            "unloading ends with the hand-back still to come and the mod not kept loaded",
-            "    if (g_trayThreadStuck || g_handBackStuck || g_panelsStuck) {",
-            "    if (g_trayThreadStuck || g_panelsStuck) {",
-            (INTEGRATION_SUITE,),
+            "unloading ends with the hand-back still to come",
+            "        while (g_subclassDepth.load() != 0 ||\n"
+            "               (!g_handedBack.load() && IsWindow(shellTrayWnd))) {",
+            "        while (g_subclassDepth.load() != 0) {",
+            (UNIT_SUITE, INTEGRATION_SUITE),
         ),
         (
             "the mod attaches while its tray thread is still starting",
@@ -411,8 +412,8 @@ def review_mutants(UNIT_SUITE, INTEGRATION_SUITE):
         ),
         (
             "nothing is forgotten as the mod loads",
-            "        ForgetIconsLongUnseenLocked();\n    }\n\n    const auto monitors",
-            "    }\n\n    const auto monitors",
+            "        ForgetIconsLongUnseenLocked();\n    }\n\n    for (size_t i = 0;",
+            "    }\n\n    for (size_t i = 0;",
             (INTEGRATION_SUITE,),
         ),
         # --- only the Explorer that shows the taskbar (DECISIONS 92) -----------

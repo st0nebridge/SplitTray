@@ -113,7 +113,7 @@ if (-not $SkipTests) {
         '-o', $testExe
         $testSource
         '-lcomctl32', '-lgdi32', '-luser32', '-lshell32'
-        '-lole32', '-loleaut32', '-lruntimeobject', '-lshlwapi', '-luiautomationcore', '-static'
+        '-lole32', '-loleaut32', '-lruntimeobject', '-lshcore', '-luiautomationcore', '-static'
     )
     & $clang @testFlags
     if ($LASTEXITCODE -ne 0) { throw "Test build failed with exit code $LASTEXITCODE" }
@@ -146,7 +146,7 @@ if (-not $SkipTests) {
         '-o', $integrationExe
         (Join-Path $repoRoot 'tests\integration\mod_integration_test.cpp')
         '-lcomctl32', '-lgdi32', '-luser32', '-lshell32'
-        '-lole32', '-loleaut32', '-lruntimeobject', '-lshlwapi', '-luiautomationcore', '-static'
+        '-lole32', '-loleaut32', '-lruntimeobject', '-lshcore', '-luiautomationcore', '-static'
         '-Wno-cast-function-type-mismatch'
     )
     & $clang @integrationFlags
@@ -172,7 +172,7 @@ if (-not $SkipTests) {
         '-o', $xamlExe
         (Join-Path $repoRoot 'tests\xaml\xaml_tests.cpp')
         '-lcomctl32', '-lgdi32', '-luser32', '-lshell32'
-        '-lole32', '-loleaut32', '-lruntimeobject', '-lshlwapi', '-luiautomationcore', '-static'
+        '-lole32', '-loleaut32', '-lruntimeobject', '-lshcore', '-luiautomationcore', '-static'
         '-Wno-cast-function-type-mismatch'
     )
     & $clang @xamlFlags

@@ -232,9 +232,17 @@ out of the regression and integration binaries, so every build compiles them.
 Windhawk's catalog reads them from the source to cache the symbols for users,
 and it cannot evaluate a condition of the mod's own (DECISIONS 94).
 
+Each module's symbols are resolved once in the mod's life, whatever the
+outcome (DECISIONS 96). `taskbar.dll` is loaded if need be and resolved in
+`Wh_ModInit`. `SystemTray.dll` is resolved there too when the mod is loaded
+into a running Explorer; otherwise a hook on `LoadLibraryExW` resolves it as
+Explorer loads it, before any tray icon exists. Neither depends on the
+embedding setting.
+
 The element's offset inside a `TaskbarHost` is read out of the first
-instructions of `TaskbarHost::FrameHeight`. If they are not the code the mod
-knows, it does not guess: the tray floats instead (DECISIONS 61).
+instructions of `TaskbarHost::FrameHeight`, with the x64 or the ARM64
+instructions as the mod was built for. If they are not the code the mod knows,
+it does not guess: the tray floats instead (DECISIONS 61).
 
 The hook only sees elements created after it is installed. So the mod also
 walks down from each taskbar's root on a timer until its panel is in place
@@ -386,17 +394,16 @@ and frequent events are not logged (DECISIONS 44, 51).
   one for an icon it does not have, so its application adds it again, whole
   (DECISIONS 64).
 * **Unloading.** All in `Wh_ModBeforeUninit`, while the hooks are still in
-  place, and in order (DECISIONS 59, 67, 68, 73):
+  place, and in order (DECISIONS 59, 67, 68, 73, 95):
   1. The mod takes its panels out of the taskbars on Explorer's thread, and
      lets go there of every XAML object it holds (`RemoveEverything`). The C++
      runtime destroys none of them (`[[clang::no_destroy]]`): when Explorer
      exits, `Wh_ModUninit` is not called, and the runtime would destroy them
      on the exiting thread after XAML has gone (DECISIONS 94).
-  2. It stops the tray thread and waits for it to end. That thread installs
-     hooks of its own, and must not be doing so while Windhawk removes them.
-     Its window classes belong to the mod's own module, and it unregisters all
-     of them as it ends: Windows keeps a class after the module that registered
-     it has gone, pointing at a window procedure that is no longer there.
+  2. It stops the tray thread and waits for it to end. Its window classes
+     belong to the mod's own module, and it unregisters all of them as it
+     ends: Windows keeps a class after the module that registered it has
+     gone, pointing at a window procedure that is no longer there.
   3. It hands every icon back to Explorer, on the taskbar's thread, as the
      icon is by then (`HandIconsBackToShell`). Until this step the subclass
      keeps track of what applications send, unloading or not: an icon removed
@@ -420,11 +427,11 @@ and frequent events are not logged (DECISIONS 44, 51).
   arrive inside a round of settling, if Explorer runs a message loop while it
   handles a record, and it is then done once that round is over.
 
-  Nothing waits longer than its budget (`g_taskbarWaitMs`, five seconds a
-  step). The messages to the taskbar's thread are sent with a time limit
-  (`SendToTaskbarBy`), and one not answered in time is posted as well: a sent
-  message that times out before it is handled is dropped. If the tray thread
-  does not end in time, or the taskbar's thread has not done its part in time,
-  the mod keeps its module loaded until Explorer exits rather than unload code
-  that is running or still to run. The subclass then takes itself off once the
-  taskbar's thread gets to the hand-back.
+  Each step is waited for until it is done, however long that takes: Windhawk
+  frees the module as soon as `Wh_ModUninit` returns, so none of the mod's
+  code may be running, or still to run, by then (DECISIONS 95). The messages
+  to the taskbar's thread are plain blocking sends. They cannot deadlock: the
+  thread unloading runs on owns no window the taskbar's thread could be
+  waiting on, and the tray thread, which sends to it, has stopped by then.
+  Until 1.3.3 each step had a time limit, and the mod kept its module loaded
+  for the rest of Explorer's life when one ran out.

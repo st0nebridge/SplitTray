@@ -26,6 +26,7 @@
 
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../../src/split-tray.wh.cpp"
@@ -251,6 +252,7 @@ void ResetEverything(const Settings& settings) {
     X::g_iconOrderLoaded = false;
     X::g_drag = X::DragState{};
     X::g_refreshPending = false;
+    X::g_dumpXamlTree = false;
     g_leftDisplayConnected = true;
     std::lock_guard<std::mutex> lock(g_mutex);
     for (auto& icon : g_icons) {
@@ -267,7 +269,7 @@ void ResetEverything(const Settings& settings) {
     SplitTrayTestHarness::StoredValues().clear();
     g_displaySlots.clear();
     g_displaySlotsLoaded = false;
-    RecomputeGeometryLocked();
+    RecomputeGeometryLocked(g_enumerateMonitors());
     g_placements.clear();
     g_placementsLoaded = false;
     g_hidden.clear();
@@ -277,7 +279,7 @@ void ResetEverything(const Settings& settings) {
 void ApplySettings(const Settings& settings) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_settings = settings;
-    RecomputeGeometryLocked();
+    RecomputeGeometryLocked(g_enumerateMonitors());
 }
 
 DWORD WireHandle(HWND wnd) {
@@ -1708,10 +1710,9 @@ void Test_AnElementLoadedOnATraysTaskbarAnchorsTheTrayThere() {
     // The IconView constructor hook hands over each tray element as it loads
     // (OnTrayIconViewLoaded). One on a display's taskbar is where that
     // display's tray goes; the slot it is in is named in the log, and with
-    // dumpXamlTree the tray frame's tree is printed once.
-    Settings s = EmbeddingSettings();
-    s.dumpXamlTree = true;
-    ResetEverything(s);
+    // the developer's dump switch on the tray frame's tree is printed once.
+    ResetEverything(EmbeddingSettings());
+    X::g_dumpXamlTree = true;
     TaskbarRow r = MakeRow(38);
     r.wrapper.Name(L"NotificationCenterButton");
     Pump();
@@ -1730,6 +1731,7 @@ void Test_AnElementLoadedOnATraysTaskbarAnchorsTheTrayThere() {
     CHECK(r.row.Children().GetAt(1) == PanelOf(tray));
     CHECK(Logged(L"in NotificationCenterButton"));
     CHECK(Logged(L"target taskbar tray subtree"));
+    X::g_dumpXamlTree = false;
 }
 
 void Test_AnElementElsewhereIsLeftAlone() {
@@ -1775,13 +1777,123 @@ void Test_AnotherProcesssSecondTaskbarIsNotFound() {
     CHECK(X::FindTaskbarWindowOn(monitor) == nullptr);
 }
 
-void Test_WithoutExplorersSymbolsNothingIsHooked() {
-    // A test process has no taskbar.dll or SystemTray.dll: nothing resolves,
-    // nothing is hooked, and the trays float rather than embed.
+bool LoggedSince(size_t from, const wchar_t* text) {
+    const auto lines = SplitTrayTestHarness::LogSnapshot();
+    for (size_t i = from; i < lines.size(); i++) {
+        if (lines[i].find(text) != std::wstring::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void ForgetSymbols() {
+    X::g_taskbarSymbolsTried.store(false);
+    X::g_taskbarSymbolsHooked.store(false);
+    X::g_systemTraySymbolsTried.store(false);
+    X::g_systemTraySymbolsHooked.store(false);
+}
+
+void Test_EachModulesSymbolsAreAskedForOnce() {
+    // From Windhawk's catalog review. A module whose symbols did not resolve
+    // was asked for again every two seconds for as long as Explorer ran,
+    // seconds of processor time each, and from two threads at once while the
+    // first answer was still coming. The harness's HookSymbols finds nothing,
+    // as after a Windows update that renamed a symbol, and any module stands
+    // in for Explorer's: nothing here is hooked.
     ResetEverything(EmbeddingSettings());
-    X::EnsureTaskbarXamlHooked();
+    ForgetSymbols();
+    HMODULE module = GetModuleHandleW(nullptr);
+    const int asked = WindhawkUtils::HookSymbolsCallCount();
+    CHECK(!X::HookTaskbarSymbols(module));
+    CHECK(!X::HookTaskbarSymbols(module));
+    CHECK(!X::HookSystemTraySymbols(module));
+    CHECK(!X::HookSystemTraySymbols(module));
+    CHECK_EQ(WindhawkUtils::HookSymbolsCallCount(), asked + 2);
     CHECK(!X::g_taskbarSymbolsHooked.load());
     CHECK(!X::g_systemTraySymbolsHooked.load());
+
+    // Two threads at once: still once.
+    ForgetSymbols();
+    std::thread other([module] { X::HookSystemTraySymbols(module); });
+    X::HookSystemTraySymbols(module);
+    other.join();
+    CHECK_EQ(WindhawkUtils::HookSymbolsCallCount(), asked + 3);
+
+    // No module is not an answer: it is asked for once there is one.
+    ForgetSymbols();
+    CHECK(!X::HookSystemTraySymbols(nullptr));
+    CHECK(!X::HookTaskbarSymbols(nullptr));
+    CHECK(!X::g_systemTraySymbolsTried.load());
+    CHECK(!X::g_taskbarSymbolsTried.load());
+    CHECK_EQ(WindhawkUtils::HookSymbolsCallCount(), asked + 3);
+    // Nor is SystemTray.dll loaded here when Wh_ModAfterInit looks again.
+    X::HookSystemTrayLoadedMeanwhile();
+    CHECK(!X::g_systemTraySymbolsTried.load());
+    CHECK_EQ(WindhawkUtils::HookSymbolsCallCount(), asked + 3);
+    ForgetSymbols();
+}
+
+void Test_SystemTrayIsResolvedAtLoadOrAsItLoads() {
+    // Wh_ModInit resolves what Explorer has loaded already, and hooks
+    // LoadLibraryExW only for a SystemTray.dll still to come.
+    ResetEverything(EmbeddingSettings());
+    ForgetSymbols();
+    HMODULE module = GetModuleHandleW(nullptr);
+    const int asked = WindhawkUtils::HookSymbolsCallCount();
+    const int hooked = WindhawkUtils::SetFunctionHookCallCount();
+
+    X::HookTaskbarModules(module, module);  // a running Explorer
+    CHECK_EQ(WindhawkUtils::HookSymbolsCallCount(), asked + 2);
+    CHECK_EQ(WindhawkUtils::SetFunctionHookCallCount(), hooked);
+
+    ForgetSymbols();
+    X::HookTaskbarModules(module, nullptr);  // Explorer starting
+    CHECK_EQ(WindhawkUtils::HookSymbolsCallCount(), asked + 3);
+    CHECK(!X::g_systemTraySymbolsTried.load());
+    CHECK_EQ(WindhawkUtils::SetFunctionHookCallCount(), hooked + 1);
+
+    // taskbar.dll that could not be loaded is said so, and nothing is asked.
+    ForgetSymbols();
+    const size_t logAt = SplitTrayTestHarness::LogSnapshot().size();
+    X::HookTaskbarModules(nullptr, module);
+    CHECK(!X::g_taskbarSymbolsTried.load());
+    CHECK(LoggedSince(logAt, L"taskbar.dll could not be loaded"));
+    CHECK_EQ(WindhawkUtils::HookSymbolsCallCount(), asked + 4);
+    ForgetSymbols();
+}
+
+HMODULE g_loadResult = nullptr;
+
+HMODULE WINAPI FakeLoadLibraryExW(LPCWSTR, HANDLE, DWORD) {
+    SetLastError(1234);
+    return g_loadResult;
+}
+
+void Test_AnotherModulesLoadIsPassedThroughUntouched() {
+    // The hook sits on every LoadLibraryExW in Explorer until SystemTray.dll
+    // arrives. Any other load is the caller's as it was, error included, and
+    // asks for nothing. (This process has no SystemTray.dll, so every load is
+    // another module's; which one is SystemTray's is IsSystemTrayLoad.)
+    ForgetSymbols();
+    const auto original = X::g_LoadLibraryExW_Original;
+    X::g_LoadLibraryExW_Original = FakeLoadLibraryExW;
+    const int asked = WindhawkUtils::HookSymbolsCallCount();
+    const int applied = ApplyHookOperationsCallCount();
+
+    g_loadResult = GetModuleHandleW(L"kernel32.dll");
+    SetLastError(0);
+    CHECK(X::LoadLibraryExW_Hook(L"kernel32.dll", nullptr, 0) == g_loadResult);
+    CHECK_EQ(GetLastError(), 1234u);
+    g_loadResult = nullptr;
+    SetLastError(0);
+    CHECK(X::LoadLibraryExW_Hook(L"missing.dll", nullptr, 0) == nullptr);
+    CHECK_EQ(GetLastError(), 1234u);
+
+    CHECK_EQ(WindhawkUtils::HookSymbolsCallCount(), asked);
+    CHECK_EQ(ApplyHookOperationsCallCount(), applied);
+    CHECK(!X::g_systemTraySymbolsTried.load());
+    X::g_LoadLibraryExW_Original = original;
 }
 
 void Test_FocusGoesToTheCellOfTheIconAsked() {
@@ -1912,8 +2024,12 @@ int main() {
     runner.Run("an element elsewhere is left alone", Test_AnElementElsewhereIsLeftAlone);
     runner.Run("another process's second taskbar is not found",
                Test_AnotherProcesssSecondTaskbarIsNotFound);
-    runner.Run("without Explorer's symbols nothing is hooked",
-               Test_WithoutExplorersSymbolsNothingIsHooked);
+    runner.Run("each module's symbols are asked for once",
+               Test_EachModulesSymbolsAreAskedForOnce);
+    runner.Run("SystemTray.dll is resolved at load, or as it loads",
+               Test_SystemTrayIsResolvedAtLoadOrAsItLoads);
+    runner.Run("another module's load is passed through untouched",
+               Test_AnotherModulesLoadIsPassedThroughUntouched);
 
     ResetEverything(EmbeddingSettings());
     CloseIsland();

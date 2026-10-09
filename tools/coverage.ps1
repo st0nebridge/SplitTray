@@ -45,7 +45,7 @@ $common = @(
 )
 $libs = @(
     '-lcomctl32', '-lgdi32', '-luser32', '-lshell32'
-    '-lole32', '-loleaut32', '-lruntimeobject', '-lshlwapi', '-luiautomationcore', '-static'
+    '-lole32', '-loleaut32', '-lruntimeobject', '-lshcore', '-luiautomationcore', '-static'
     '-Wno-cast-function-type-mismatch'
 )
 $suites = [ordered]@{

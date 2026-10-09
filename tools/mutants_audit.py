@@ -9,19 +9,7 @@ module passes 400 lines.
 def audit_mutants(UNIT_SUITE, INTEGRATION_SUITE):
     """(description, text to find, replacement, suites that should kill it)"""
     return [
-        # --- unloading, DECISIONS 73 ---------------------------------------------
-        (
-            "unloading waits on the taskbar's thread with no time limit",
-            "    if (SendMessageTimeoutW(taskbar, message, 0, 0, SMTO_NORMAL, wait, &result) != 0 ||",
-            "    if ((SendMessageW(taskbar, message, 0, 0), true) ||",
-            (UNIT_SUITE,),
-        ),
-        (
-            "a message the taskbar did not answer in time is dropped",
-            "    PostMessageW(taskbar, message, 0, 0);\n    return false;",
-            "    return false;",
-            (UNIT_SUITE,),
-        ),
+        # --- unloading, DECISIONS 73 and 95 --------------------------------------
         (
             "the subclass stays on the window once the icons are back",
             "        if (g_handedBack.load()) {\n"
@@ -32,16 +20,18 @@ def audit_mutants(UNIT_SUITE, INTEGRATION_SUITE):
         ),
         (
             "unloading takes the subclass off from its own thread",
-            "    g_shellTrayWnd.store(nullptr);\n    return done;",
+            "        SendMessageW(shellTrayWnd, WM_NULL, 0, 0);\n    }\n"
+            "    g_shellTrayWnd.store(nullptr);\n}",
+            "        SendMessageW(shellTrayWnd, WM_NULL, 0, 0);\n    }\n"
             "    WindhawkUtils::RemoveWindowSubclassFromAnyThread(shellTrayWnd,\n"
             "                                                     ShellTrayWndSubclassProc);\n"
-            "    g_shellTrayWnd.store(nullptr);\n    return done;",
+            "    g_shellTrayWnd.store(nullptr);\n}",
             (UNIT_SUITE,),
         ),
         (
             "unloading ends with a call of the subclass still under way",
-            "            return g_subclassDepth.load() == 0 &&\n                   (",
-            "            return (",
+            "        while (g_subclassDepth.load() != 0 ||\n",
+            "        while (false ||\n",
             (UNIT_SUITE,),
         ),
         (

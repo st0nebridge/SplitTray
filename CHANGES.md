@@ -1,5 +1,167 @@
 # Change Log
 
+## 2026-10-09 - Split Tray 1.3.3: the catalog's AI review
+
+**Impact:** fix. Unloading, symbol resolution and the tray thread's timer
+change how they work; what the mod does for the user is the same, except that
+an ARM64 PC now gets the embedded tray and the XAML dump is no longer a
+setting.
+
+The user asked on 2026-10-09: "post it and then proceed with the ai review".
+The pull request, ramensoftware/windhawk-mods#6050, was opened, and `/ai-review`
+asked for. The review found three things to fix, and made optional notes. Each
+was checked against the code before anything changed.
+
+**The three findings, and the fixes**
+
+* **`Wh_ModUninit` pinned the module** when a step of unloading ran out of
+  time. Windhawk frees the module as soon as `Wh_ModUninit` returns, and the
+  pinned image stayed in Explorer, with its thread and state, beside the next
+  copy loaded. Now every step waits until it is done (DECISIONS 95):
+  * the tray thread, with no deadline;
+  * the panels' removal and the hand-back, as plain `SendMessageW` calls to the
+    taskbar's thread (`SendToTaskbarBy` and its re-post are gone);
+  * the wait for the subclass to be off the stack, with no deadline.
+  * `g_taskbarWaitMs` and the three "stuck" flags are gone.
+* **`HookSymbols` was called from the tray thread's timer**, every two seconds
+  until both modules resolved: forever after a Windows update renamed a
+  symbol, and on two threads at once while `Wh_ModAfterInit`'s first answer was
+  still coming. Now each module is resolved once (DECISIONS 96):
+  * `taskbar.dll` in `Wh_ModInit`, loaded for the purpose if need be;
+  * `SystemTray.dll` there if loaded, otherwise from a hook on kernelbase's
+    `LoadLibraryExW` as Explorer loads it (`LoadLibraryExW_Hook`,
+    `IsSystemTrayLoad`), and in `Wh_ModAfterInit` for a load in between;
+  * a flag per module taken with `exchange`, whatever the outcome;
+  * regardless of `embedInTaskbar`. `EnsureTaskbarXamlHooked` is gone.
+* **No ARM64 decoding of `TaskbarHost::FrameHeight`**, so on an ARM64 PC no
+  display's tray went into its taskbar. `ElementOffsetFromFrameHeightArm64`
+  reads the pattern taskbar-multirow reads, beside the x64 decoder, and the
+  build picks one by architecture (`_M_ARM64` or `__aarch64__`; the mingw
+  target predefines only the second). Still not run on ARM64 hardware.
+
+**The optional notes taken**
+
+* Display enumeration moved out of `g_mutex`, at every call site:
+  `RecomputeGeometryLocked` takes the displays as an argument.
+* A floating tray is moved, put on top and redrawn only when where it goes or
+  how changes, or its icons do; the timer's pass passes `false`
+  (`SyncFloatingTrays`). It used to put every tray back above every other
+  topmost window every two seconds.
+* While a display's tray waits to embed, the attach is asked for on every tick
+  for ten seconds, then every thirty (`AttachDueAfter`); it was every two
+  seconds, a walk of up to 600 elements on the taskbar's thread each.
+* The arrange window is sized, and its font and image list made, for the DPI
+  of the display it opens on (`ArrangeMetricsFor`).
+* `-lshlwapi`, unused, is gone; `GetMonitorDpi` calls `GetDpiForMonitor`
+  directly, with `-lshcore`, in the mod and in every test build.
+* `LoadSettings` no longer checks `StringSetting` for null, which it never is.
+  The parsers keep theirs: their tests pass `nullptr`.
+* `dumpXamlTree` is no longer a setting but a switch in the source,
+  `g_dumpXamlTree`; `redeploy.ps1` loses `-DumpXamlTree`.
+* The opacity setting's description says 16 to 255, as it is clamped.
+* `g_floatingWnds`, written and read only by the tests, is gone; the
+  integration test finds a floating tray by the number its window holds.
+* `RegisterModClass` no longer unregisters classes "an earlier build"
+  registered against Explorer's module: 1.2.0, the first published version,
+  already registered them against its own.
+* The comments name no apps of the developer's or the developer's machine; the
+  header says where "DECISIONS NN", `tests/` and `tools/` are.
+* A stray carriage return in `docs/xaml-injection-plan.md` ("tools\redeploy"
+  collapsed by a heredoc) is fixed; `check-sources.py` does not look for one.
+
+**The second AI review** (of `e514628`) found nothing blocking and confirmed
+the three fixes. Of its two optional notes, the comments that recorded where a
+change came from ("from Windhawk's catalog review", "until 1.3.3 ...") now give
+only the reason, with the DECISIONS entry; the arrange window not following a
+move to a display at another scale (`WM_DPICHANGED`) is left for later.
+
+**Answered rather than changed:** the test seams stay, since the tests compile
+this file (DECISIONS 15); the containers stay `[[clang::no_destroy]]` vectors
+swapped empty, since `RemoveEverything` also runs when embedding is switched
+off and the trays can be embedded again; a per-exe exclusion from
+`TaskbarCreated` is left for a later version; the `IconView` hook stays.
+
+**Tests** (a regression test for each change):
+* Regression: the ARM64 decoder against instruction bytes, both decoders'
+  refusals, `IsSystemTrayLoad`, the displays asked for with the lock free,
+  `AttachDueAfter`'s schedule, `ArrangeMetricsFor` at 96 and 144 DPI; the two
+  unloading tests now check that unloading waits for a busy taskbar thread and
+  for a subclass call under way, rather than giving up.
+* Integration: [18] runs unloading on a thread of its own and checks it waits
+  for a hand-back held up by a round of settling; [17d] checks that a timer
+  tick leaves a floating tray below a window put above it; [11b] checks the
+  arrange window's size for its DPI.
+* XAML: each module's symbols asked for once, from two threads too;
+  `HookTaskbarModules` hooks `LoadLibraryExW` only when `SystemTray.dll` is not
+  loaded; another module's load passed through with its error.
+* Harness: `WindhawkUtils::SetFunctionHook` and `Wh_ApplyHookOperations` are
+  counted.
+* Mutants: `tools/mutants_catalog.py`, 21 new; three in `mutants_audit.py` and
+  `mutants_reviews.py` restated for the code without time limits, two that
+  tested the time limits removed.
+* Integration [16], unloaded straight after loading, now holds the tray thread
+  before its window exists, and runs the unload on a thread of its own. The
+  mutation check found it had gone soft: `StopTrayThread` waited 20 ms before
+  its first try at the shutdown, by when the window usually existed, so a
+  shutdown tried only once survived. The loop now tries before it waits.
+
+**Verified**
+* `tools/build.ps1`: catalog rules clean; 1154 regression checks at -O0 and
+  -O2; 416 integration checks; 345 XAML checks; the DLL, version 1.3.3.
+* Coverage over the three suites: regions 86.0%, branches 75.9%, functions
+  90.6%, lines 86.6% (1.3.2: 85.5/74.9/90.5/85.9).
+* Mutation, the new and changed mutants and those over unloading: 35 of 35
+  killed, after the fix to [16] above (33 of 34 before it).
+* Modularity fitness on `.`: 87.5/100, pass; its testability check fails at 7.7, as
+  before.
+* The catalog's own checks: `pr_validation.py` on a merge of 1.3.3, no
+  warnings, symbols extracted for x64 and ARM64; its compile command with
+  Windhawk 1.7.3's compiler, x64 and ARM64, exit 0 and no warnings. Windhawk
+  2.0's alpha is not installed here.
+* Live, in this machine's Explorer, with the build before the last change to
+  `StopTrayThread`'s loop:
+  * installed and Explorer restarted: `taskbar.dll` resolved in
+    `Wh_ModInit`; `SystemTray.dll` resolved two seconds later through
+    `LoadLibraryExW_Hook`; tray 2 put in its taskbar by the `IconView` hook,
+    seven icons;
+  * switched off and on again in that Explorer: `Wh_ModUninit` took 15 ms,
+    nothing was pinned, Explorer stayed up; on again,
+    `SystemTray.dll` resolved in `Wh_ModInit` and tray 2 came back with its
+    seven icons; no floating tray window left.
+
+## 2026-10-09 - Split Tray 1.3.2 published, and its catalog pull request prepared
+
+**Impact:** none. A record of the release.
+
+* **Public commit:** `0c0e354` "Split Tray 1.3.2: ready for Windhawk's
+  catalog", on `main`, on top of 1.3.1 (`3eb62a7`).
+* **Built from:** development commit `90fd56a`, minus the paths `.release-scan`
+  names. 46 files: those of 1.3.1, plus `tools/check-catalog.py` and its
+  tests.
+  * The first build of the tree kept `.archive/.github` and `.archive/.vscode`.
+    The shell had expanded the `.archive/*` exclude, and its glob skips
+    dot-folders. The file count showed it before anything was committed.
+  * The tree was rebuilt with globbing off, so git matched the pathspec itself.
+* **Tag:** `v1.3.2`, annotated.
+* **GitHub release** "Split Tray 1.3.2", latest.
+  * Its assets are `split-tray.wh.cpp` and `SHA256SUMS`.
+  * After upload they were downloaded back and checked against their digests.
+  * The file is the tag's own blob (`b4c17ac`).
+* **Release scan:** exit 0, with nothing to fix and nothing to review. It
+  covered the tree, the commit, the tag, the assets and the notes.
+* **Verified from a `git archive` export:** its own `tools/build.ps1` passed.
+  * The catalog rules: 26 tests, and the check clean.
+  * 1097 regression checks, at -O0 and at -O2.
+  * 403 integration checks and 317 XAML checks.
+  * The mod DLL, version 1.3.2.
+* **The catalog pull request, prepared but not opened.**
+  * A fork, `st0nebridge/windhawk-mods`, with the branch `split-tray`. It is
+    one commit ahead of the catalog's `main` (`0effe74`) and adds only
+    `mods/split-tray.wh.cpp`, byte for byte the release's file.
+  * The catalog's own `pr_validation.py` passed on a merge of that branch, with
+    the drafted description. It has the "Mod authorship" section, with "The
+    submitter, with AI assistance" and "Claude" ticked, as the user chose.
+
 ## 2026-10-09 - Split Tray 1.3.2: ready for Windhawk's catalog
 
 **Impact:** fix. What the mod does is unchanged. It now passes the checks

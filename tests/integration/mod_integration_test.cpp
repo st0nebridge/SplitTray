@@ -27,6 +27,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include "../../src/split-tray.wh.cpp"
@@ -380,10 +381,26 @@ bool RecordedAsShells(UINT uID) {
     return false;
 }
 
+// The floating panel of tray `number`: each holds its number as its window's
+// user data. The mod's windows are the only ones on this desktop.
 HWND FloatingWindowOf(int number) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    auto found = g_floatingWnds.find(number);
-    return found == g_floatingWnds.end() ? nullptr : found->second;
+    for (HWND wnd = FindWindowExW(nullptr, nullptr, kFloatingClassName, nullptr); wnd;
+         wnd = FindWindowExW(nullptr, wnd, kFloatingClassName, nullptr)) {
+        if (GetWindowLongPtrW(wnd, GWLP_USERDATA) == number) {
+            return wnd;
+        }
+    }
+    return nullptr;
+}
+
+// Whether `upper` is above `lower` in the z-order.
+bool IsAbove(HWND upper, HWND lower) {
+    for (HWND wnd = GetWindow(lower, GW_HWNDPREV); wnd; wnd = GetWindow(wnd, GW_HWNDPREV)) {
+        if (wnd == upper) {
+            return true;
+        }
+    }
+    return false;
 }
 
 TrayLayout FloatingLayoutOf(int number) {
@@ -1587,6 +1604,14 @@ int RunTests() {
         CHECK_EQ(count.sharing, count.lists);
         printf("      %d list(s), %d sharing the image list\n", count.lists,
                count.sharing);
+        // Sized for the display it opened on (from Windhawk's catalog review).
+        const UINT dpi = GetDpiForWindow(arrange);
+        const ArrangeMetrics m = ArrangeMetricsFor(dpi);
+        RECT client = {};
+        GetClientRect(arrange, &client);
+        CHECK_EQ(client.right, m.margin + count.lists * (m.listWidth + m.margin));
+        CHECK_EQ(client.bottom, m.height);
+        printf("      %ldx%ld at %u DPI\n", client.right, client.bottom, dpi);
 
         PostMessageW(arrange, WM_CLOSE, 0, 0);
         CHECK(PumpUntil([] { return FindWindowW(kArrangeClassName, nullptr) == nullptr; }));
@@ -2224,17 +2249,36 @@ int RunTests() {
     {
         const size_t logAtQuick = SplitTrayTestHarness::LogSnapshot().size();
         // Not waiting for the tray thread, as Wh_ModInit does not for one
-        // slower than its budget: the unload then comes before the thread's
-        // window exists, and the shutdown has to be sent once it does.
+        // slower than its budget, and holding it before it makes its window:
+        // the unload then comes before the window exists, and the shutdown
+        // has to be sent once it does.
+        HANDLE hold = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        g_trayThreadHold = hold;
         g_trayThreadStartWaitMs = 0;
         CHECK(Wh_ModInit() == TRUE);
         g_trayThreadStartWaitMs = 5000;
-        Wh_ModBeforeUninit();
-        // Stopped before Windhawk takes the hooks out, which it does between
-        // the two: the thread installs hooks of its own (DECISIONS 67).
+        std::atomic<bool> stopped{false};
+        std::thread unloading([&stopped] {
+            Wh_ModBeforeUninit();
+            stopped.store(true);
+        });
+        Sleep(100);
+        CHECK(g_trayWnd.load() == nullptr);
+        SetEvent(hold);
+        const bool done = PumpUntil([&stopped] { return stopped.load(); }, 5000);
+        CHECK(done);
+        if (done) {
+            unloading.join();
+        } else {
+            unloading.detach();  // waiting for ever on a shutdown never sent
+        }
+        g_trayThreadHold = nullptr;
+        CloseHandle(hold);
+        // Stopped in Wh_ModBeforeUninit, before Windhawk takes the hooks out
+        // (DECISIONS 67).
         CHECK(g_trayThread == nullptr);
         Wh_ModUninit();
-        CHECK(!LoggedSince(logAtQuick, L"did not"));
+        CHECK(LoggedSince(logAtQuick, L"Split Tray unloaded"));
         CHECK(g_trayThread == nullptr);
         Pump();
         Sleep(300);
@@ -2403,44 +2447,84 @@ int RunTests() {
         CHECK(g_fakeShellWnd != nullptr);
     }
 
-    // ---- a hand-back that cannot finish in time --------------------------
+    // ---- a timer tick that changes nothing --------------------------------
+    // From Windhawk's catalog review. Every two seconds the timer put each
+    // floating tray back on top of every other topmost window, and redrew it,
+    // whether or not anything had changed.
+    printf("\n[17d] a timer tick that changes nothing leaves a floating tray where it is\n");
+    {
+        CHECK(Wh_ModInit() == TRUE);
+        Wh_ModAfterInit();
+        const int last = LastTrayNumber();
+        CHECK(PumpUntil([&] { return FloatingWindowOf(last) != nullptr; }, 8000));
+        HWND floating = FloatingWindowOf(last);
+        SettleModThread();
+        // Another window on top, above it.
+        HWND above = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                                     L"STATIC", nullptr, WS_POPUP, 0, 0, 10, 10, nullptr,
+                                     nullptr, hInst, nullptr);
+        CHECK(above != nullptr);
+        SetWindowPos(above, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        CHECK(IsAbove(above, floating));
+        // Past two ticks of the timer.
+        PumpUntil([] { return false; }, 4500);
+        CHECK(FloatingWindowOf(last) == floating);
+        CHECK(IsAbove(above, floating));
+        printf("      the floating tray stayed below a window put above it\n");
+        DestroyWindow(above);
+        Wh_ModBeforeUninit();
+        Wh_ModUninit();
+        Pump();
+    }
+
+    // ---- a hand-back still to come when unloading begins ------------------
     // The hand-back can arrive inside a round of settling on the taskbar's
     // thread - Explorer may run a message loop while it handles a record - and
-    // it is then done once that round is over. Unloading waits for it; one
-    // not done by then keeps the mod loaded rather than unload code the
-    // taskbar's thread is still in (DECISIONS 68). The subclass is left on the
-    // window, since taking it off from here is a message the taskbar's thread
-    // has to answer, and takes itself off there once the icons are back
-    // (DECISIONS 73). Last, since the store is then left as it is.
-    printf("\n[18] a hand-back still to come when unloading ends keeps the mod loaded\n");
+    // it is then done once that round is over (DECISIONS 68). Unloading waits
+    // for it, however long that is: Windhawk frees the module as soon as
+    // Wh_ModUninit returns, and the mod used to give up after a few seconds
+    // and keep itself loaded instead (from Windhawk's catalog review). The
+    // subclass takes itself off there once the icons are back (DECISIONS 73).
+    // Unloading runs on a thread of its own here, as on Windhawk's, while this
+    // thread is the taskbar's.
+    printf("\n[18] a hand-back still to come when unloading begins is waited for\n");
     {
         CHECK(Wh_ModInit() == TRUE);
         Wh_ModAfterInit();
         CHECK(PumpUntil([] { return g_shellTrayWnd.load() == g_fakeShellWnd; }));
-        const size_t logAtStuck = SplitTrayTestHarness::LogSnapshot().size();
-        const DWORD budget = g_taskbarWaitMs;
-        g_taskbarWaitMs = 200;
+        const size_t logAtWait = SplitTrayTestHarness::LogSnapshot().size();
         const int removals = WindhawkUtils::UnsubclassCallCount();
-        g_settlingShell = true;  // a round under way, here on this thread
-        Wh_ModBeforeUninit();
-        Wh_ModUninit();
-        g_taskbarWaitMs = budget;
+        g_settlingShell = true;  // a round under way on the taskbar's thread
+        std::atomic<bool> unloaded{false};
+        std::thread unloading([&unloaded] {
+            Wh_ModBeforeUninit();
+            Wh_ModUninit();
+            unloaded.store(true);
+        });
+        // Longer than the time limit unloading used to keep to.
+        PumpUntil([] { return false; }, 6000);
+        CHECK(!unloaded.load());
         CHECK(!g_handedBack.load());
-        CHECK(LoggedSince(logAtStuck, L"stays loaded"));
         CHECK_EQ(WindhawkUtils::UnsubclassCallCount(), removals);
 
         // The round ends, and the wake-up after it hands the icons back and
-        // takes the subclass off: Explorer hears applications directly.
+        // takes the subclass off. Only then does unloading end.
         g_settlingShell = false;
         SendMessageW(g_fakeShellWnd, GetReplayMessage(), 0, 0);
         CHECK(g_handedBack.load());
+        CHECK(PumpUntil([&unloaded] { return unloaded.load(); }));
+        unloading.join();
         CHECK_EQ(WindhawkUtils::UnsubclassCallCount(), removals + 1);
+        CHECK(LoggedSince(logAtWait, L"Split Tray unloaded"));
+        CHECK(!LoggedSince(logAtWait, L"stays loaded"));
+        // Explorer hears applications directly.
         g_shell.Reset();
-        CHECK(SendTrayNotification(NIM_ADD, 601, L"after a stuck unload") == TRUE);
+        CHECK(SendTrayNotification(NIM_ADD, 601, L"after a hand-back waited for") == TRUE);
         CHECK_EQ(g_shell.adds, 1);
         SendTrayNotification(NIM_DELETE, 601, nullptr);
-        printf("      unloading ended with the mod kept loaded; the subclass came off "
-               "once the icons were back\n");
+        printf("      unloading waited for the hand-back, and ended once the icons "
+               "were back and the subclass off\n");
     }
 
     DestroyWindow(g_iconOwnerWnd);

@@ -5,13 +5,14 @@
 #          taskbar down for a few seconds, so it does the whole cycle at once
 #          rather than making the user approve several steps.
 #
-# Usage:   .\tools\redeploy.ps1 [-NoBuild] [-Seconds 45] [-DumpXamlTree]
+# Usage:   .\tools\redeploy.ps1 [-NoBuild] [-Seconds 45]
 #                               [-Setting @{defaultTray='primary'}]
 #
 #          -Setting also takes 'name=value' strings, which is the only form that
 #          survives `powershell -File redeploy.ps1 ...`.
 #
-#          dumpXamlTree is switched off on every run without -DumpXamlTree.
+#          The XAML tree dump is a switch in the source, g_dumpXamlTree, not a
+#          setting: set it to true for a run, and back afterwards.
 #
 # Output:  the captured log is written to build\live-log.txt and the
 #          split-tray lines are printed.
@@ -25,7 +26,6 @@
 param(
     [switch]$NoBuild,
     [int]$Seconds = 45,
-    [switch]$DumpXamlTree,
     # Forget every hand-moved icon, hidden icon and the icon order, so the
     # per-process rules decide again. The mod's own storage lives under HKLM,
     # so it takes the elevated run.
@@ -88,13 +88,6 @@ if (-not $NoBuild) {
 # UAC prompt per iteration.
 Write-Step 'Install (elevated - approve the UAC prompt)'
 $overrides = ConvertTo-SettingTable $Setting
-# Set on every run, not only when asked for. The setting persists, and a dump
-# left on from one diagnostic run held the taskbar's thread for seconds on every
-# Explorer start afterwards, long enough for Desk Tray to lose two icons
-# (DECISIONS 51).
-if (-not $overrides.ContainsKey('dumpXamlTree')) {
-    $overrides['dumpXamlTree'] = [int]$DumpXamlTree.IsPresent
-}
 
 # The storage value names, read from the mod rather than listed here: a copy in
 # this script drifted from the source once already ('iconOrder' for what the mod

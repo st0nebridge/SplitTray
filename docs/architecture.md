@@ -227,6 +227,11 @@ kinds of symbol instead:
   (DECISIONS 26, 27). An element belongs to a taskbar when their `XamlRoot`s are
   the same object.
 
+The tables naming these symbols come before the condition that leaves the XAML
+out of the regression and integration binaries, so every build compiles them.
+Windhawk's catalog reads them from the source to cache the symbols for users,
+and it cannot evaluate a condition of the mod's own (DECISIONS 94).
+
 The element's offset inside a `TaskbarHost` is read out of the first
 instructions of `TaskbarHost::FrameHeight`. If they are not the code the mod
 knows, it does not guess: the tray floats instead (DECISIONS 61).
@@ -382,7 +387,11 @@ and frequent events are not logged (DECISIONS 44, 51).
   (DECISIONS 64).
 * **Unloading.** All in `Wh_ModBeforeUninit`, while the hooks are still in
   place, and in order (DECISIONS 59, 67, 68, 73):
-  1. The mod takes its panels out of the taskbars on Explorer's thread.
+  1. The mod takes its panels out of the taskbars on Explorer's thread, and
+     lets go there of every XAML object it holds (`RemoveEverything`). The C++
+     runtime destroys none of them (`[[clang::no_destroy]]`): when Explorer
+     exits, `Wh_ModUninit` is not called, and the runtime would destroy them
+     on the exiting thread after XAML has gone (DECISIONS 94).
   2. It stops the tray thread and waits for it to end. That thread installs
      hooks of its own, and must not be doing so while Windhawk removes them.
      Its window classes belong to the mod's own module, and it unregisters all

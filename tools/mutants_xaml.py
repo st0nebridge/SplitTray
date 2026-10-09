@@ -244,4 +244,34 @@ def xaml_mutants(XAML_SUITE):
             "            if (MonitorFromWindow(wnd, MONITOR_DEFAULTTONULL)",
             (XAML_SUITE,),
         ),
+        (
+            "unloading keeps the trays' storage",
+            "    std::vector<std::unique_ptr<EmbeddedTray>>().swap(g_embeddedTrays);",
+            "    g_embeddedTrays.clear();",
+            (XAML_SUITE,),
+        ),
+        (
+            "unloading keeps the cells' button template",
+            "    g_faceTemplate = nullptr;\n    g_faceTemplateTried = false;\n}",
+            "    g_faceTemplateTried = false;\n}",
+            (XAML_SUITE,),
+        ),
+        (
+            "a tray embedded again has no button template for its cells",
+            "    g_faceTemplate = nullptr;\n    g_faceTemplateTried = false;\n}",
+            "    g_faceTemplate = nullptr;\n}",
+            (XAML_SUITE,),
+        ),
+        (
+            "unloading keeps the Loaded revokers",
+            "    g_loadedRevokers.clear();  // an empty std::list holds nothing",
+            "",
+            (XAML_SUITE,),
+        ),
+        (
+            "unloading keeps the hover timer",
+            "        g_popupTimer.Stop();\n        g_popupTimer = nullptr;",
+            "        g_popupTimer.Stop();",
+            (XAML_SUITE,),
+        ),
     ]

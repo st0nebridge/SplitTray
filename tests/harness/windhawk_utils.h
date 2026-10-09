@@ -164,7 +164,8 @@ class StringSetting {
     unique_string m_value;
 };
 
-// Symbol hooks, for the XAML suite, which compiles the mod's XAML section. A
+// Symbol hooks. Every suite compiles the mod's tables of symbols, which sit
+// outside its XAML section (DECISIONS 94); only the XAML suite calls them. A
 // test process has no taskbar.dll or SystemTray.dll to resolve them in, so
 // HookSymbols finds nothing, as it would after a Windows update that renamed
 // them: the suite drives the XAML code below the hooks directly.

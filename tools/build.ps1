@@ -84,6 +84,16 @@ Write-Step 'Symbol check'
 & python (Join-Path $PSScriptRoot 'check-symbols.py')
 if ($LASTEXITCODE -ne 0) { throw 'A symbol the mod hooks is missing from the live binaries' }
 
+Write-Step 'Windhawk catalog rules'
+# What the catalog's own checks would otherwise reject only once a pull request
+# is open: 64-bit only, symbol tables it can read, no XAML destroyed by the
+# runtime at Explorer's exit, readme images pinned (DECISIONS 94). The rules'
+# own tests run first.
+& python (Join-Path $repoRoot 'tests\regression\test_check_catalog.py')
+if ($LASTEXITCODE -ne 0) { throw 'Catalog rule tests FAILED' }
+& python (Join-Path $PSScriptRoot 'check-catalog.py')
+if ($LASTEXITCODE -ne 0) { throw 'The mod breaks a rule of Windhawk''s catalog' }
+
 Write-Step 'Compile check (identical to the Windhawk editor)'
 & $clang @editorFlags '-fsyntax-only' $modSource
 if ($LASTEXITCODE -ne 0) { throw "Compile check failed with exit code $LASTEXITCODE" }

@@ -19,7 +19,7 @@
 #include <vector>
 
 #define WH_MOD_ID L"split-tray-test"
-#define WH_MOD_VERSION L"1.3.1"
+#define WH_MOD_VERSION L"1.3.2"
 
 namespace SplitTrayTestHarness {
 

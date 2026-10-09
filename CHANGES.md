@@ -1,5 +1,131 @@
 # Change Log
 
+## 2026-10-09 - Split Tray 1.3.2: ready for Windhawk's catalog
+
+**Impact:** fix. What the mod does is unchanged. It now passes the checks
+Windhawk's catalog (`ramensoftware/windhawk-mods`) runs on a pull request, and
+it no longer leaves XAML for the C++ runtime to destroy when Explorer exits.
+
+Asked for by the user: "look into making a pull request to get this mod listed
+on the windhawk platform". 1.3.1 was checked against a clone of the catalog's
+own CI scripts:
+* its validator (`.github/pr_validation.py`), with no warnings;
+* its symbol extraction, which failed;
+* its compile, with the flags of `scripts/compile_mod.py` and Windhawk 1.7.3's
+  compiler, for each architecture.
+
+What it found, and the fix (DECISIONS 94):
+
+* **32-bit x86 did not compile.** A mod with no `@architecture` is built for
+  x86 as well. There, the two capture-less lambdas passed to `EnumWindows` and
+  `EnumChildWindows` do not convert to the `__stdcall` `WNDENUMPROC`. Split
+  Tray needs Windows 11, which has no 32-bit Explorer, so it now declares
+  `@architecture x86-64`. On ARM64 PCs Windhawk then builds it for ARM64. The
+  ARM64 build compiles with no warnings, but has not been run.
+* **The catalog could not read the symbol tables.** The two `SYMBOL_HOOK`
+  tables sat inside `#ifndef SPLITTRAY_NO_XAML`. The catalog's extractor
+  evaluates only architecture macros, so it reported "Symbol block under an
+  unresolved condition". The pull request check would fail, and users would get
+  no pre-cached symbols.
+  * The tables, the pointers they fill and `HookTaskbarSymbols` /
+    `HookSystemTraySymbols` now come before the condition, in a part of
+    section 10 that every build compiles.
+  * The regression and integration binaries, which leave the XAML out, have a
+    stand-in for the one hook function the tables name. They never install it.
+  * Extraction now lists all 7 symbols, for x64 and for ARM64.
+* **XAML destroyed by the runtime at Explorer's exit.** Windhawk's guidance on
+  process shutdown applies here. When Explorer exits, `Wh_ModUninit` is not
+  called, and the C++ runtime destroys globals on the exiting thread after
+  XAML has gone: a crash or a hang at sign-out.
+  * Five objects held XAML: `g_embeddedTrays` (each tray's `XamlRoot`),
+    `g_loadedRevokers`, `g_popupTimer`, `g_overflowFlyout`, and the cells'
+    button template.
+  * The template was a function-local static, so it was also released at every
+    unload, on Windhawk's thread rather than the taskbar's. It is now the
+    global `g_faceTemplate`.
+  * All five are `[[clang::no_destroy]]`. `RemoveEverything`, which runs on the
+    taskbar's thread when the mod unloads, releases them in full, the vector's
+    storage included, and resets the template so a later load makes it again.
+* **The readme image was on the `main` branch.** The catalog keeps the first
+  copy of each readme image it sees, and flags a later change at the same
+  address. The image is now pinned to the `v1.3.1` tag, where it is the same
+  picture.
+
+**A check in the build** (`tools/check-catalog.py`, the "Windhawk catalog
+rules" step) enforces all four rules:
+* exactly `@architecture x86-64`;
+* no `SYMBOL_HOOK` under a preprocessor condition;
+* `[[clang::no_destroy]]` on every global or static whose type holds a WinRT
+  object (directly, through a revoker, or through a struct of the mod's that
+  holds one), while weak references and event tokens are left alone;
+* readme images that are not on a branch.
+
+On 1.3.1 it reports exactly the nine problems above; on 1.3.2 it is clean.
+
+**Regression tests.**
+* `tests/regression/test_check_catalog.py`: 26 tests of the check. Each rule
+  is shown failing on the shape 1.3.1 had and passing on the fixed one, and the
+  mod's own source passes. 20 mutants of the check, all killed.
+* XAML suite, "unloading lets go of every XAML object the mod holds".
+  * It holds one of each object: a tray, the cells' template, the overflow's
+    popup, the hover timer and a revoker. `RemoveEverything` must leave every
+    one empty, with the trays' vector at capacity 0.
+  * A tray embedded again gets its template back.
+  * 14 new checks.
+* Mutants in `tools/mutants_xaml.py`, all killed (5/5):
+  * the trays' storage kept;
+  * the template kept;
+  * the template not made again;
+  * the revokers kept;
+  * the hover timer kept.
+
+**Totals.**
+* 1097 regression checks, at -O0 and at -O2;
+* 403 integration checks;
+* 317 XAML checks.
+* Coverage: regions 85.5%, branches 74.9%, functions 90.5%, lines 85.9%. In
+  1.3.1 these were 85.1%, 74.6%, 90.5% and 85.3%.
+
+**Against the catalog's own checks.**
+* Its validator: no warnings.
+* Its symbol extraction: 7 symbols, for x64 and for ARM64.
+* Its compile, with Windhawk 1.7.3's compiler: x64 and ARM64 build with no
+  warnings. The 2.0 alpha the catalog also builds with was not available here.
+
+**Live, in this machine's Explorer.**
+* Installed, with Explorer restarted. Both symbol tables resolved from their
+  new place, and tray 2 went into the second display's taskbar with its six
+  icons.
+* Then disabled and enabled again in the same Explorer.
+  * The mod unloaded in 0.4 s.
+  * Explorer kept running.
+  * The mod loaded again, and tray 2 was put back with its icons.
+  * The cells' template was made again, with no error logged.
+  * No floating tray window was left.
+
+## 2026-10-07 - Split Tray 1.3.1 published
+
+**Impact:** none. A record of the release.
+
+* **Public commit:** `3eb62a7` "Split Tray 1.3.1: no stray tray from a folder
+  window's Explorer", on `main`.
+* **Built from:** development commit `cb451b7`, minus the paths `.release-scan`
+  names. It goes on top of 1.3.0 (`6950165`); it is not a new root.
+* **Tag:** `v1.3.1`, annotated, the project's first.
+* **GitHub release** "Split Tray 1.3.1", the first. Its assets are
+  `split-tray.wh.cpp` and `SHA256SUMS`, both taken from the export. After
+  upload they were downloaded back and checked against their digests.
+* **Release scan:** exit 0, with nothing to fix and nothing to review. It
+  covered the tree, the new commit, the tag, the assets and the release notes.
+  On the development commit it reported 200 findings to fix, which shows that
+  it can fail.
+* **Verified from a `git archive` export of the public commit:**
+  * its own `tools/build.ps1` passed;
+  * 1097 regression checks, at -O0 and at -O2;
+  * 403 integration checks and 303 XAML checks;
+  * the mod DLL, version 1.3.1.
+* **Recorded** as DECISIONS 93.
+
 ## 2026-10-07 - Release preparation for 1.3.1
 
 **Impact:** none. Records and release tooling only; the mod is unchanged.

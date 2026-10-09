@@ -1475,6 +1475,49 @@ void Test_TheChevronOpensTheOverflowWithItsIcons() {
     DestroyWindow(t.owner);
 }
 
+void Test_UnloadingLetsGoOfEveryXamlObjectTheModHolds() {
+    // DECISIONS 94. The C++ runtime destroys none of the globals that hold
+    // XAML, since at Explorer's exit it would do so on the wrong thread after
+    // XAML has gone. So unloading lets go of every one of them itself.
+    Settings s = EmbeddingSettings();
+    s.maxVisibleIcons = 1;
+    ThreeIcons t = MakeThreeIcons(s);
+    CHECK(t.tray != nullptr);
+    if (!t.tray) {
+        return;
+    }
+    // One of each: a tray, its cells' button template, the overflow's popup,
+    // the hover timer, and a revoker waiting for an element to load.
+    X::ChevronReleased(CellsOf(t.tray)[0], kLeftDisplay, false);
+    X::WaitToOpenPopup(t.a);
+    X::g_loadedRevokers.emplace_back();
+    Pump();
+    CHECK(!X::g_embeddedTrays.empty());
+    CHECK(X::g_faceTemplate != nullptr);
+    CHECK(X::g_overflowFlyout != nullptr);
+    CHECK(X::g_popupTimer != nullptr);
+    CHECK(!X::g_loadedRevokers.empty());
+
+    X::RemoveEverything();
+    CHECK(X::g_embeddedTrays.empty());
+    CHECK_EQ(X::g_embeddedTrays.capacity(), 0u);
+    CHECK(X::g_faceTemplate == nullptr);
+    CHECK(X::g_overflowFlyout == nullptr);
+    CHECK(X::g_popupTimer == nullptr);
+    CHECK(X::g_loadedRevokers.empty());
+
+    // A tray embedded again, after the mod was turned off and on, has its
+    // cells' template back.
+    X::EmbeddedTray* again = Embed(t.row);
+    CHECK(again != nullptr);
+    if (again) {
+        X::RefreshTray(*again);
+        Pump();
+    }
+    CHECK(X::g_faceTemplate != nullptr);
+    DestroyWindow(t.owner);
+}
+
 // ---------------------------------------------------------------------------
 // The mod's menu (BuildTrayContextMenu)
 // ---------------------------------------------------------------------------
@@ -1825,6 +1868,8 @@ int main() {
     runner.Run("embedding off, or the display gone, takes the tray out",
                Test_EmbeddingOffOrTheDisplayGoneTakesTheTrayOut);
     runner.Run("unloading takes every panel out", Test_UnloadingTakesEveryPanelOut);
+    runner.Run("unloading lets go of every XAML object the mod holds",
+               Test_UnloadingLetsGoOfEveryXamlObjectTheModHolds);
     runner.Run("the attach walk leaves a tree with no tray of Explorer's alone",
                Test_TheAttachWalkLeavesATreeWithNoTrayOfExplorersAlone);
 

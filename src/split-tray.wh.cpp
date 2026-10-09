@@ -2,11 +2,12 @@
 // @id              split-tray
 // @name            Split Tray
 // @description     A notification area on every display's taskbar: choose, per application, which tray its icon shows in
-// @version         1.3.1
+// @version         1.3.2
 // @author          Brandon Stonebridge
 // @github          https://github.com/st0nebridge
 // @homepage        https://github.com/st0nebridge/SplitTray
 // @include         explorer.exe
+// @architecture    x86-64
 // @compilerOptions -lcomctl32 -lgdi32 -luser32 -lole32 -loleaut32 -lruntimeobject -lshlwapi -luiautomationcore
 // @license         MIT
 // ==/WindhawkMod==
@@ -19,7 +20,7 @@ Windows 11 shows the notification area - the system tray - on the main
 display only. Split Tray puts one on the taskbar of **every other display**,
 and lets you choose which tray each application's icon lives in.
 
-![Tray 2 in the second display's taskbar: the chevron, five icons, and the clock](https://raw.githubusercontent.com/st0nebridge/SplitTray/main/docs/images/tray-2.png)
+![Tray 2 in the second display's taskbar: the chevron, five icons, and the clock](https://raw.githubusercontent.com/st0nebridge/SplitTray/v1.3.1/docs/images/tray-2.png)
 
 ## What you get
 
@@ -6625,13 +6626,6 @@ void* TaskListWndSiteOf(void* taskBand, void* wantedVftable) {
 
 }  // namespace SplitTray
 
-// The test binaries define SPLITTRAY_NO_XAML: they cannot exercise any of this
-// (no XAML island in a test process, no taskbar to attach to) and compiling nine
-// WinRT projections roughly doubles every build in the test loop. The compile
-// check and the DLL build - the two that decide whether the shipped mod is
-// correct - always compile it.
-#ifndef SPLITTRAY_NO_XAML
-
 // ============================================================================
 // Section 10 - The taskbar's XAML
 //
@@ -6655,6 +6649,154 @@ void* TaskListWndSiteOf(void* taskBand, void* wantedVftable) {
 // the mod's tray thread.
 // ============================================================================
 
+// ---------------------------------------------------------------------------
+// Reaching the taskbar's XAML
+//
+// Not through XAML diagnostics: that is a single-consumer-per-process resource
+// and windows-11-taskbar-styler holds it (DECISIONS.md 24). Instead the mod
+// hooks private symbols in Explorer's own DLLs, which is what every mod that
+// manipulates SystemTray elements does, and which coexists with the styler.
+//
+// Two separate jobs:
+//
+//   SystemTray.dll   IconView's constructor is the anchor. Every tray icon view
+//                    Explorer creates runs through it, and the XAML element is
+//                    the implementation object's projected interface. This is
+//                    how the mod gets a live element to work from at all.
+//
+//   taskbar.dll      Turns a taskbar *window* into its XamlRoot, so an element
+//                    can be matched to the taskbar that owns it by identity.
+//                    Element -> window is not possible without diagnostics;
+//                    window -> XamlRoot is (DECISIONS.md 27).
+//
+// Every symbol here is checked against the live binaries at build time by
+// tools/check-symbols.py, because a hook that fails to resolve is silent.
+//
+// This part is compiled into every build, the test binaries included, while
+// the rest of the section is not. Windhawk's catalog reads the tables of
+// symbols from the source, to cache the symbols for the mod's users, and it
+// cannot evaluate a condition of the mod's own: a table under one goes
+// unread (DECISIONS 94).
+// ---------------------------------------------------------------------------
+
+namespace SplitTrayXaml {
+
+// --- taskbar.dll ------------------------------------------------------------
+
+void* g_CTaskBand_ITaskListWndSite_vftable = nullptr;
+void* g_CSecondaryTaskBand_ITaskListWndSite_vftable = nullptr;
+
+// GetTaskbarHost returns a std::shared_ptr by value, so on x64 it takes a
+// hidden pointer to the caller's two-pointer result slot.
+using CTaskBand_GetTaskbarHost_t = void*(WINAPI*)(void* pThis, void** result);
+CTaskBand_GetTaskbarHost_t g_CTaskBand_GetTaskbarHost = nullptr;
+CTaskBand_GetTaskbarHost_t g_CSecondaryTaskBand_GetTaskbarHost = nullptr;
+
+using TaskbarHost_FrameHeight_t = int(WINAPI*)(void* pThis);
+TaskbarHost_FrameHeight_t g_TaskbarHost_FrameHeight = nullptr;
+
+using Ref_count_base_Decref_t = void(WINAPI*)(void* pThis);
+Ref_count_base_Decref_t g_Ref_count_base_Decref = nullptr;
+
+// --- SystemTray.dll ---------------------------------------------------------
+
+using IconView_IconView_t = void*(WINAPI*)(void* pThis);
+IconView_IconView_t g_IconView_IconView_Original = nullptr;
+// With the rest of the XAML, below. The test binaries, which leave that out,
+// have a stand-in that is never installed.
+void* WINAPI IconView_IconView_Hook(void* pThis);
+
+// --- state ------------------------------------------------------------------
+
+std::atomic<bool> g_taskbarSymbolsHooked{false};
+std::atomic<bool> g_systemTraySymbolsHooked{false};
+std::atomic<bool> g_symbolFailureLogged{false};
+
+// ---------------------------------------------------------------------------
+// Installing the hooks
+//
+// Neither module is loaded when Windhawk injects, for the same reason the
+// taskbar window does not exist yet (DECISIONS.md 18), so this is retried from
+// the tray thread's timer rather than attempted once at startup.
+// ---------------------------------------------------------------------------
+
+bool HookTaskbarSymbols() {
+    if (g_taskbarSymbolsHooked.load()) {
+        return true;
+    }
+    HMODULE module = GetModuleHandleW(L"taskbar.dll");
+    if (!module) {
+        return false;
+    }
+
+    WindhawkUtils::SYMBOL_HOOK taskbarDllHooks[] = {
+        {{LR"(const CTaskBand::`vftable'{for `ITaskListWndSite'})"},
+         &g_CTaskBand_ITaskListWndSite_vftable},
+        {{LR"(const CSecondaryTaskBand::`vftable'{for `ITaskListWndSite'})"},
+         &g_CSecondaryTaskBand_ITaskListWndSite_vftable},
+        {{LR"(public: virtual class std::shared_ptr<class TaskbarHost> __cdecl CTaskBand::GetTaskbarHost(void)const )"},
+         &g_CTaskBand_GetTaskbarHost},
+        {{LR"(public: virtual class std::shared_ptr<class TaskbarHost> __cdecl CSecondaryTaskBand::GetTaskbarHost(void)const )"},
+         &g_CSecondaryTaskBand_GetTaskbarHost},
+        {{LR"(public: int __cdecl TaskbarHost::FrameHeight(void)const )"},
+         &g_TaskbarHost_FrameHeight},
+        {{LR"(public: void __cdecl std::_Ref_count_base::_Decref(void))"},
+         &g_Ref_count_base_Decref},
+    };
+
+    if (!WindhawkUtils::HookSymbols(module, taskbarDllHooks,
+                                    ARRAYSIZE(taskbarDllHooks))) {
+        if (!g_symbolFailureLogged.exchange(true)) {
+            Wh_Log(L"[xaml] could not resolve taskbar.dll symbols; the embedded "
+                   L"tray cannot find which taskbar an element belongs to");
+        }
+        return false;
+    }
+
+    g_taskbarSymbolsHooked.store(true);
+    Wh_Log(L"[xaml] taskbar.dll symbols resolved");
+    return true;
+}
+
+bool HookSystemTraySymbols() {
+    if (g_systemTraySymbolsHooked.load()) {
+        return true;
+    }
+    HMODULE module = GetModuleHandleW(L"SystemTray.dll");
+    if (!module) {
+        return false;
+    }
+
+    // Verified present in this exact binary by tools/check-symbols.py;
+    // Taskbar.View.dll does not carry it (DECISIONS.md 26).
+    WindhawkUtils::SYMBOL_HOOK systemTrayDllHooks[] = {
+        {{LR"(public: __cdecl winrt::SystemTray::implementation::IconView::IconView(void))"},
+         &g_IconView_IconView_Original, IconView_IconView_Hook},
+    };
+
+    if (!WindhawkUtils::HookSymbols(module, systemTrayDllHooks,
+                                    ARRAYSIZE(systemTrayDllHooks))) {
+        if (!g_symbolFailureLogged.exchange(true)) {
+            Wh_Log(L"[xaml] could not resolve the SystemTray.dll IconView "
+                   L"constructor; no tray elements will be seen");
+        }
+        return false;
+    }
+
+    g_systemTraySymbolsHooked.store(true);
+    Wh_Log(L"[xaml] SystemTray.dll IconView constructor hooked");
+    return true;
+}
+
+}  // namespace SplitTrayXaml
+
+// The rest of the section. The regression and integration binaries define
+// SPLITTRAY_NO_XAML and leave it out: they cannot exercise it (no XAML island in
+// a test process, no taskbar to attach to) and compiling nine WinRT projections
+// roughly doubles every build in the test loop. The compile check and the DLL
+// build - the two that decide whether the shipped mod is correct - always
+// compile it, and so does the XAML suite (DECISIONS 91).
+#ifndef SPLITTRAY_NO_XAML
 
 // winbase.h defines GetCurrentTime as a macro, which collides with
 // Windows.UI.Xaml.Media.Animation's Timeline::GetCurrentTime.
@@ -6910,58 +7052,6 @@ wuxmi::WriteableBitmap IconToBitmap(HICON icon) {
     return bitmap;
 }
 
-// ---------------------------------------------------------------------------
-// Reaching the taskbar's XAML
-//
-// Not through XAML diagnostics: that is a single-consumer-per-process resource
-// and windows-11-taskbar-styler holds it (DECISIONS.md 24). Instead the mod
-// hooks private symbols in Explorer's own DLLs, which is what every mod that
-// manipulates SystemTray elements does, and which coexists with the styler.
-//
-// Two separate jobs:
-//
-//   SystemTray.dll   IconView's constructor is the anchor. Every tray icon view
-//                    Explorer creates runs through it, and the XAML element is
-//                    the implementation object's projected interface. This is
-//                    how the mod gets a live element to work from at all.
-//
-//   taskbar.dll      Turns a taskbar *window* into its XamlRoot, so an element
-//                    can be matched to the taskbar that owns it by identity.
-//                    Element -> window is not possible without diagnostics;
-//                    window -> XamlRoot is (DECISIONS.md 27).
-//
-// Every symbol here is checked against the live binaries at build time by
-// tools/check-symbols.py, because a hook that fails to resolve is silent.
-// ---------------------------------------------------------------------------
-
-// --- taskbar.dll ------------------------------------------------------------
-
-void* g_CTaskBand_ITaskListWndSite_vftable = nullptr;
-void* g_CSecondaryTaskBand_ITaskListWndSite_vftable = nullptr;
-
-// GetTaskbarHost returns a std::shared_ptr by value, so on x64 it takes a
-// hidden pointer to the caller's two-pointer result slot.
-using CTaskBand_GetTaskbarHost_t = void*(WINAPI*)(void* pThis, void** result);
-CTaskBand_GetTaskbarHost_t g_CTaskBand_GetTaskbarHost = nullptr;
-CTaskBand_GetTaskbarHost_t g_CSecondaryTaskBand_GetTaskbarHost = nullptr;
-
-using TaskbarHost_FrameHeight_t = int(WINAPI*)(void* pThis);
-TaskbarHost_FrameHeight_t g_TaskbarHost_FrameHeight = nullptr;
-
-using Ref_count_base_Decref_t = void(WINAPI*)(void* pThis);
-Ref_count_base_Decref_t g_Ref_count_base_Decref = nullptr;
-
-// --- SystemTray.dll ---------------------------------------------------------
-
-using IconView_IconView_t = void*(WINAPI*)(void* pThis);
-IconView_IconView_t g_IconView_IconView_Original = nullptr;
-
-// --- state ------------------------------------------------------------------
-
-std::atomic<bool> g_taskbarSymbolsHooked{false};
-std::atomic<bool> g_systemTraySymbolsHooked{false};
-std::atomic<bool> g_symbolFailureLogged{false};
-
 bool g_loggedTargetStack = false;
 
 // One display's tray, inside that display's taskbar. Taskbar-thread only, like
@@ -7000,7 +7090,12 @@ struct EmbeddedTray {
     std::map<uint64_t, uint64_t> drawnPictures;
 };
 
-std::vector<std::unique_ptr<EmbeddedTray>> g_embeddedTrays;
+// This and every other global that holds XAML is never destroyed by the C++
+// runtime. When Explorer exits, Wh_ModUninit is not called and the runtime would
+// release that XAML from whichever thread is exiting, after XAML has gone - a
+// crash or a hang at sign-out. RemoveEverything lets go of all of it on the
+// taskbar's thread when the mod unloads (DECISIONS 94).
+[[clang::no_destroy]] std::vector<std::unique_ptr<EmbeddedTray>> g_embeddedTrays;
 
 EmbeddedTray* TrayOfMonitor(HMONITOR monitor) {
     for (auto& tray : g_embeddedTrays) {
@@ -7236,8 +7331,9 @@ void SyncEmbeddedTrays() {
 // ---------------------------------------------------------------------------
 
 // Keeps the Loaded revokers alive until they fire. A raw token would outlive
-// the element and fire on a dead object.
-std::list<wux::FrameworkElement::Loaded_revoker> g_loadedRevokers;
+// the element and fire on a dead object. Never destroyed by the runtime, like
+// g_embeddedTrays.
+[[clang::no_destroy]] std::list<wux::FrameworkElement::Loaded_revoker> g_loadedRevokers;
 
 // Walks up to the named container an element sits in, the way Explorer's own
 // tray elements are addressed - by name, not by position (DECISIONS.md 25).
@@ -7728,13 +7824,17 @@ POINT CursorPoint() {
 // since the taskbar's own style for buttons would draw one around the picture.
 // ---------------------------------------------------------------------------
 
+// Made once, on the taskbar's thread. A function-local static was released when
+// the mod's DLL unloaded, on Windhawk's thread rather than the taskbar's; as a
+// global it is let go of by RemoveEverything, like g_embeddedTrays.
+[[clang::no_destroy]] wux::Controls::ControlTemplate g_faceTemplate{nullptr};
+bool g_faceTemplateTried = false;
+
 wux::Controls::ControlTemplate FaceTemplate() {
-    static wux::Controls::ControlTemplate cached{nullptr};
-    static bool tried = false;
-    if (!tried) {
-        tried = true;
+    if (!g_faceTemplateTried) {
+        g_faceTemplateTried = true;
         try {
-            cached = wux::Markup::XamlReader::Load(
+            g_faceTemplate = wux::Markup::XamlReader::Load(
                          L"<ControlTemplate "
                          L"xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' "
                          L"TargetType='Button'><ContentPresenter "
@@ -7746,7 +7846,7 @@ wux::Controls::ControlTemplate FaceTemplate() {
                    winrt::to_hresult());
         }
     }
-    return cached;
+    return g_faceTemplate;
 }
 
 wuxc::Button FaceOfCell(wuxc::Border const& cell) {
@@ -7786,7 +7886,7 @@ void SendKeyboardMenu(uint64_t serial) {
 // the icon for the hover time, and takes it down on NIN_POPUPCLOSE.
 // ---------------------------------------------------------------------------
 
-wux::DispatcherTimer g_popupTimer{nullptr};
+[[clang::no_destroy]] wux::DispatcherTimer g_popupTimer{nullptr};  // as g_embeddedTrays
 uint64_t g_popupWaiting = 0;  // the icon the pointer rests on
 uint64_t g_popupOpen = 0;     // the icon whose popup is open
 
@@ -8660,8 +8760,9 @@ wuxc::Border MakeCell(EmbeddedTray const& tray,
 // The chevron and its flyout
 // ---------------------------------------------------------------------------
 
-// One popup for every tray: only one can be open at a time.
-wuxc::Flyout g_overflowFlyout{nullptr};
+// One popup for every tray: only one can be open at a time. Never destroyed by
+// the runtime, like g_embeddedTrays.
+[[clang::no_destroy]] wuxc::Flyout g_overflowFlyout{nullptr};
 
 void HideOverflowFlyout() {
     if (g_overflowFlyout) {
@@ -9283,82 +9384,6 @@ void RemovePanel(EmbeddedTray& tray) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Installing the hooks
-//
-// Neither module is loaded when Windhawk injects, for the same reason the
-// taskbar window does not exist yet (DECISIONS.md 18), so this is retried from
-// the tray thread's timer rather than attempted once at startup.
-// ---------------------------------------------------------------------------
-
-bool HookTaskbarSymbols() {
-    if (g_taskbarSymbolsHooked.load()) {
-        return true;
-    }
-    HMODULE module = GetModuleHandleW(L"taskbar.dll");
-    if (!module) {
-        return false;
-    }
-
-    WindhawkUtils::SYMBOL_HOOK taskbarDllHooks[] = {
-        {{LR"(const CTaskBand::`vftable'{for `ITaskListWndSite'})"},
-         &g_CTaskBand_ITaskListWndSite_vftable},
-        {{LR"(const CSecondaryTaskBand::`vftable'{for `ITaskListWndSite'})"},
-         &g_CSecondaryTaskBand_ITaskListWndSite_vftable},
-        {{LR"(public: virtual class std::shared_ptr<class TaskbarHost> __cdecl CTaskBand::GetTaskbarHost(void)const )"},
-         &g_CTaskBand_GetTaskbarHost},
-        {{LR"(public: virtual class std::shared_ptr<class TaskbarHost> __cdecl CSecondaryTaskBand::GetTaskbarHost(void)const )"},
-         &g_CSecondaryTaskBand_GetTaskbarHost},
-        {{LR"(public: int __cdecl TaskbarHost::FrameHeight(void)const )"},
-         &g_TaskbarHost_FrameHeight},
-        {{LR"(public: void __cdecl std::_Ref_count_base::_Decref(void))"},
-         &g_Ref_count_base_Decref},
-    };
-
-    if (!WindhawkUtils::HookSymbols(module, taskbarDllHooks,
-                                    ARRAYSIZE(taskbarDllHooks))) {
-        if (!g_symbolFailureLogged.exchange(true)) {
-            Wh_Log(L"[xaml] could not resolve taskbar.dll symbols; the embedded "
-                   L"tray cannot find which taskbar an element belongs to");
-        }
-        return false;
-    }
-
-    g_taskbarSymbolsHooked.store(true);
-    Wh_Log(L"[xaml] taskbar.dll symbols resolved");
-    return true;
-}
-
-bool HookSystemTraySymbols() {
-    if (g_systemTraySymbolsHooked.load()) {
-        return true;
-    }
-    HMODULE module = GetModuleHandleW(L"SystemTray.dll");
-    if (!module) {
-        return false;
-    }
-
-    // Verified present in this exact binary by tools/check-symbols.py;
-    // Taskbar.View.dll does not carry it (DECISIONS.md 26).
-    WindhawkUtils::SYMBOL_HOOK systemTrayDllHooks[] = {
-        {{LR"(public: __cdecl winrt::SystemTray::implementation::IconView::IconView(void))"},
-         &g_IconView_IconView_Original, IconView_IconView_Hook},
-    };
-
-    if (!WindhawkUtils::HookSymbols(module, systemTrayDllHooks,
-                                    ARRAYSIZE(systemTrayDllHooks))) {
-        if (!g_symbolFailureLogged.exchange(true)) {
-            Wh_Log(L"[xaml] could not resolve the SystemTray.dll IconView "
-                   L"constructor; no tray elements will be seen");
-        }
-        return false;
-    }
-
-    g_systemTraySymbolsHooked.store(true);
-    Wh_Log(L"[xaml] SystemTray.dll IconView constructor hooked");
-    return true;
-}
-
 // Called from the tray thread's timer until both modules are present.
 void EnsureTaskbarXamlHooked() {
     if (g_unloading.load()) {
@@ -9423,13 +9448,28 @@ void RemoveEverything() {
     for (auto& tray : g_embeddedTrays) {
         RemovePanel(*tray);
     }
-    g_embeddedTrays.clear();
+    // Its storage too, which clear() keeps: the runtime never frees it.
+    std::vector<std::unique_ptr<EmbeddedTray>>().swap(g_embeddedTrays);
     g_loggedTargetStack = false;
-    g_loadedRevokers.clear();
+    g_loadedRevokers.clear();  // an empty std::list holds nothing
+    // The cells that used it went with their panels.
+    g_faceTemplate = nullptr;
+    g_faceTemplateTried = false;
 }
 
 }  // namespace SplitTrayXaml
 
+#else  // SPLITTRAY_NO_XAML
+
+namespace SplitTrayXaml {
+
+// The symbol table above names the hook, so the test binaries need one. They
+// never install it: a test process has no SystemTray.dll.
+void* WINAPI IconView_IconView_Hook(void* pThis) {
+    return g_IconView_IconView_Original(pThis);
+}
+
+}  // namespace SplitTrayXaml
 
 #endif  // SPLITTRAY_NO_XAML
 

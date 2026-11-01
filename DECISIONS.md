@@ -107,7 +107,7 @@ active decision.
 
 | 98 | 2026-11-01 | **Arrange is the reliable order editor for every Split Tray-owned tray; taskbar dragging remains a convenience rather than a requirement.** Refines 40: Ctrl+Up/Down and explicit buttons edit shared saved order, and filtering never reorders an invisible subset. Windows owns tray 1's order. | Active |
 | 99 | 2026-11-01 | **Presentation order is shared by both renderers through synchronized snapshots; hidden choices apply to floating panels too.** Floating overflow uses native accessible menus; embedded overflow retains its grid and updates existing cells in place. | Active |
-| 100 | 2026-11-01 | **Every embedded control has a focusable invokable button, and Split Tray's menu uses Ctrl+Shift+F10 while Shift+F10 stays the application's.** Ctrl+Alt+T opens Arrange and Ctrl+Alt+Shift+T cycles floating trays; failed shortcut registrations are logged. | Active |
+| 100 | 2026-11-01 | **Every embedded control has a focusable invokable button, and Split Tray's menu uses Ctrl+Shift+F10 while Shift+F10 stays the application's.** Ctrl+Alt+T opens Arrange and Ctrl+Alt+Shift+T cycles floating trays; failed shortcut registrations are logged. | Shortcut registration superseded by 112; other behavior active |
 | 101 | 2026-11-01 | **An embedded tray occupies at most one quarter of its taskbar root width; the visible count can reduce that further.** Overflow protects the space for Windows' taskbar controls, including when the count is unlimited. | Active |
 | 102 | 2026-11-01 | **Configuration import replaces only the selected mod's settings and known local state, validates before writing, requires that mod disabled, and saves recovery data first.** The checkout-owned PowerShell tool can use a file picker and rolls back failed writes; it never imports DLL metadata or enablement. | Active |
 
@@ -126,3 +126,8 @@ active decision.
 | 109 | 2026-11-01 | **Owned trays retain a dimmed source in its original slot and commit in-tray order only on release.** Requested to match native primary behavior. Refines 98/103/108: the marker previews an existing destination, embedded cells do not shift during pointer movement, and cancellation preserves original order. Ghost and moving image have separate lifetimes/opacity; the observer restores the source even when capture events are delayed. | Active |
 
 | 110 | 2026-11-01 | **Redeploy settings cross elevation as JSON data and checkout paths as parameters; generated installer code never interpolates either.** Fixes the demonstrated setting-expression injection, and child failure stops before any Explorer restart. | Active |
+
+| 111 | 2026-11-01 | **Explicit Show or Move onto a tray bar reveals and promotes the icon within the existing count/width budget; dropping onto its chevron or popup explicitly hides it.** Overflow origin travels with the existing value-only gesture queue so a same-tray return is valid, while ordinary same-bar reordering stays unchanged. | Active |
+
+| 112 | 2026-11-01 | **Global shortcuts are off by default and opt in through Settings using Ctrl+Shift+F11/F12; async input polls use logical mouse buttons.** Supersedes decision 100's unconditional Ctrl+Alt shortcuts after catalog review demonstrated conflicts and swapped-button failures. | Active |
+| 113 | 2026-11-01 | **Private native drag hooks are optional independently of the existing IconView constructor hook.** Missing symbols disable only their optional behavior and are logged once at resolution. | Active |

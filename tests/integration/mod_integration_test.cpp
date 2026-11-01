@@ -597,22 +597,20 @@ void HoverInTray(int number, UINT uID) {
 // The uID and version of the icon at `index` in tray `number`, in the order
 // the tray draws them.
 std::pair<UINT, UINT> IconAtIndexInTray(int number, int index) {
+    const auto view=FloatingViewOf(number,false);
+    if (index<0 || static_cast<size_t>(index)>=view.serials.size()) return {0,0};
     std::lock_guard<std::mutex> lock(g_mutex);
-    const auto indices = IconsInTrayLocked(number);
-    if (index < 0 || static_cast<size_t>(index) >= indices.size()) {
-        return {0, 0};
-    }
-    const MirroredIcon& icon = g_icons[indices[static_cast<size_t>(index)]];
-    return {icon.uID, icon.version};
+    const auto icon=FindIconBySerialLocked(view.serials[static_cast<size_t>(index)]);
+    return icon ? std::pair<UINT,UINT>{icon->uID,icon->version} : std::pair<UINT,UINT>{0,0};
 }
 
-// What a screen reader calls the icon at `index` in tray `number`.
+// What a screen reader calls the displayed icon, not its registration position.
 std::wstring LabelAtIndexInTray(int number, int index) {
+    const auto view=FloatingViewOf(number,false);
+    if (index<0 || static_cast<size_t>(index)>=view.serials.size()) return {};
     std::lock_guard<std::mutex> lock(g_mutex);
-    const auto indices = IconsInTrayLocked(number);
-    return index >= 0 && static_cast<size_t>(index) < indices.size()
-               ? IconLabel(g_icons[indices[static_cast<size_t>(index)]])
-               : std::wstring();
+    const auto icon=FindIconBySerialLocked(view.serials[static_cast<size_t>(index)]);
+    return icon ? IconLabel(*icon) : std::wstring();
 }
 
 // What an application is sent for its icon selected from the keyboard: from

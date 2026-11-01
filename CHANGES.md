@@ -3778,7 +3778,7 @@ impact: medium
 affected_modules: tools/redeploy.ps1; tools/build.ps1; tests/regression/test_redeploy.py
 related_tests: RedeployTests.test_quoted_settings_are_never_executed; RedeployTests.test_checkout_paths_with_quotes_and_spaces_stay_data; Test_ForgedDropWakeCannotSupplyATransfer
 author: Brandon Stonebridge
-timestamp: 2026-11-01T10:00:00Z
+timestamp: 2026-11-01T09:25:00Z
 commit_ref: this commit
 
 The redeploy helper's unescaped generated literals executed an adversarial setting
@@ -3793,3 +3793,130 @@ stable change identifiers remain published under the recorded release policy.
 The full internal security review is docs/security-review-2026-11-01.md, excluded
 from the public release. Its verified finding is fixed; remaining platform and
 original freeze/dot uncertainties are explicitly retained.
+
+
+## 2026-11-01 - Publish Split Tray 1.4.6
+
+id: CU-20261101-016
+type: doc
+impact: none
+related_tests: public archive export build and regression/integration/XAML suites; strict release scan; downloaded asset digest verification
+author: Brandon Stonebridge
+timestamp: 2026-11-01T09:36:01.412716+00:00
+commit_ref: this commit
+
+
+## Release verification â€” 2026-11-01T09:36:01.412716+00:00
+
+- Development source: `b41ff5996502fef87563c68be6478a7d26dae0f6`; public release: `480bf5c4a6241eb26bf3e9677196053f185ecfa4`, parent `cbe4f1ab9fa1b09a7171675b81539197b79b20ee`. Exactly one append-only public commit; development history was not pushed.
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/build.ps1` from the public commit's fresh archive export: **Build OK**. Regression **1,526/0** at both O0 and O2, private-desktop integration **504/0**, hosted XAML **461/0**. Catalog **26 tests passed**, configuration **4 passed**, redeploy security **2 passed**. All 10 hooked symbols, source hygiene, settings and five lifecycle exports checked.
+- `tools/performance.ps1 -Runs 1` from that export: **passed**; 4,800 notifications, 240 refreshes, p95 **0.555 ms**, maximum **0.916 ms**, GDI/USER/kernel-handle growth **+3/+1/+1**. Isolated probe, not a universal performance claim.
+- Full public tree/new-commit/tag scan: **exit 0, no findings**, strict mode. Source/checksum/release-note material scan: **exit 0, no findings**. Unfiltered development control scan: **exit 1**, demonstrating the gate rejects private development material; no credential finding.
+- Installed directly from the tested archive export as `local@split-tray_1.4.6_672334.dll`, DLL SHA256 `483839CA10D9B1987247BD5EB99E966F5015467C2C9A580D1CD5511C7B12F096`. Explorer **11016** remained running and responsive, **109.375 ms CPU over 10 seconds**; catalog disabled, development mod enabled; **25/25** pre-existing settings/state entries matched.
+- `git push --atomic origin codex/public-1.4.6:refs/heads/main refs/tags/v1.4.6:refs/tags/v1.4.6` succeeded. Remote main and peeled annotated tag match `480bf5c4a6241eb26bf3e9677196053f185ecfa4`. Release published at **2026-11-01T09:35:12Z**: https://github.com/st0nebridge/SplitTray/releases/tag/v1.4.6.
+- Source SHA256 **aba5829b3c724ff8ab69d88abd87b3a99236bb430338be3674c322a3a71e0af8**. Both source and SHA256SUMS were downloaded and checked byte-for-byte before and after publishing, and against GitHub's asset digests.
+- Structure analyzer **91.2/100**; its Python testability check still fails at **23.1%**, and it does not inspect C++. No full structural compliance claim. Runtime source was unchanged by this audit remediation; the prior 1.4.6 coverage gate (regions85.29/branches73.49/functions90.02/lines87.11%) was not rerun, and no new mutation score is claimed.
+
+The verified medium tooling finding is fixed. No further verified blocker remains in this scope. ARM64 runtime, physical touch/pen and actual RTL/high-contrast switching remain untested. Original freeze/dot causality remains unproven. No user preferences changed during this pass.
+
+
+## 2026-11-01 - Submit Split Tray 1.4.6 to Windhawk's catalog
+
+id: CU-20261101-017
+type: doc
+impact: none
+affected_modules: release notes; catalog submission
+related_tests: official .github/pr_validation.py on local test merge; catalog CI checks
+author: Brandon Stonebridge
+timestamp: 2026-11-01T09:47:41.755411+00:00
+commit_ref: this commit
+
+Removed the irrelevant historical freeze/white-dot sentence from the published
+1.4.6 release notes, as requested. Persisted that release-communication preference
+in project AGENTS.md, which is excluded from public exports.
+
+The catalog's original submission (#6050) was merged, while its Split Tray source
+remained 1.3.3. Recreated the missing st0nebridge/windhawk-mods fork and opened
+https://github.com/ramensoftware/windhawk-mods/pull/6830 from
+codex/split-tray-1.4.6 at 47d40dcc343169b7a51f4fc909fb0940ac287662.
+It modifies only mods/split-tray.wh.cpp, byte-identical to the 1.4.6 release asset
+(SHA256 aba5829b3c724ff8ab69d88abd87b3a99236bb430338be3674c322a3a71e0af8).
+The PR follows the current template, including update changelog markers.
+The upstream validator passed on a local test merge and extracted both x64 and
+ARM64 symbols. GitHub's catalog validation passed. Requested /ai-review at
+https://github.com/ramensoftware/windhawk-mods/pull/6830#issuecomment-6556298355.
+The repository requires the review before /ready-for-reviewer. Submission is not
+yet a catalog publication; maintainers must merge it before app availability.
+
+The GitHub connector returned 403 for upstream PR/comment writes; the authenticated
+CLI completed those authorized operations. Official validation uses an isolated
+Python 3.13 environment, since the local 3.12 launcher points to a missing runtime.
+No runtime source, installed enablement, catalog app copy, or release tag changed.
+
+Catalog result: all five upstream checks passed, including Windhawk 1.6.1, 1.7.3 and 2.0.0-alpha.7 compatibility jobs. The PR remains waiting-for-ai-review; no review result has been posted yet, so /ready-for-reviewer has not been sent. This is an external review wait, not a published catalog update.
+
+
+## 2026-11-01 - Integrate secondary overflow with explicit icon moves
+
+id: CU-20261101-018
+type: fix
+impact: medium
+affected_modules: src/split-tray.wh.cpp
+related_tests: Test_CapacityOverflowCanBeShownWithoutHidingItFirst; Test_OverflowDragReturnsToItsOwnTrayWithoutAnApplicationClick
+author: Brandon Stonebridge
+commit_ref: this commit
+
+Capacity overflow now offers Show on the tray even without a saved hidden flag;
+showing or explicitly moving an icon promotes it into the visible order without
+raising the configured count/width budget. Overflow sources carry a value-only
+origin through the bounded observer/drop queue so returning to the same tray is
+accepted. Dropping on the secondary chevron or open popup explicitly hides the
+icon; moving onto a bar reveals it. Popup targets use public automation screen
+bounds, and light-dismiss clears the active popup identity. Version 1.4.7.
+
+Additional regression anchors: Test_OverflowDropsHideAndRevealWithoutLeakingTheChoice; Test_SecondaryChevronIsAnOverflowDropTarget. Initial hosted-XAML red run: 474 checks, five failures reproducing missing promotion and rejected same-tray overflow return. First fixed run: 474 checks, zero failures.
+
+The first full run passed 1539 regression checks at O0/O2 and exposed one integration assertion whose helper used registration order despite its displayed-order contract. The helper now resolves actual visible serials; the focus assertion remains intact. The overflow drop regression additionally proves origin survives the press/observer/queued-drop path.
+
+An additional missed-release reproduction found overflow cells could leave
+pointerDown true without ever owning capture, keeping all embedded refreshes
+deferred. The observer now ends such a press, posts its pending refresh and
+suppresses any late click; the queued transfer remains independent. Regression:
+Test_OverflowObserverReleasesAStuckRefreshAfterAMissedPointerRelease failed with
+six assertions before the fix (490 checks). This proves the stale-refresh path,
+not the exact cause of every reported Unsloth occurrence.
+
+Popup dismissal callbacks are explicitly revoked before unload, including during a pending close animation. Regression check: Test_UnloadingLetsGoOfEveryXamlObjectTheModHolds.
+
+Final-source coverage initially passed unit1543/integration504 and found one test waiting only 30ms for the asynchronous popup Closed animation. The test now pumps until the actual Closed condition with a two-second bound; its assertion is unchanged. The new missed-release and unload-token checks passed in that run.
+
+
+Final 1.4.7 verification (2026-11-01T10:53:58.754167+00:00):
+- Full build before the final XAML cleanup: Build OK, regression1543 at O0/O2,
+  integration504, XAML481, all zero failures.
+- Final-source tools/coverage.ps1: regression1543, integration504, XAML491,
+  zero failures; regions85.28%, branches73.58%, functions90.12%, lines87.08%,
+  all gates passed. Existing LLVM warning: seven mixed-suite function mismatches.
+- Final tools/build.ps1 -SkipTests: Build OK, ten hooked symbols/settings/source
+  hygiene/catalog checks and all five lifecycle exports passed. The current
+  upstream catalog validator reports zero warnings. No new mutation score.
+- Installed local@split-tray_1.4.7_100125.dll with SHA256 275C1FBC7C61CFD8662C06132DC99377B17459A77B9E8ADCC6F862C4DDB2A7C1.
+  Explorer kept PID 11016, remained responsive, and used
+  156.25 ms CPU over ten seconds. All
+  26 existing settings/state values matched;
+  development mod enabled, catalog disabled. No Explorer restart.
+- Live physical popup dragging and Show behavior need user confirmation. This
+  development build has not been tagged/published; catalog PR6830 remains1.4.6.
+
+User confirmed on installed 1.4.7: both overflow transfer directions and Show on the tray work. The active visible-count setting remains eight; no configuration was changed by that confirmation. The count can be set to zero, while the separate embedded taskbar-width budget still applies.
+
+## CU-20261101-019 — Input compatibility and optional native drag hooks
+
+- type: fix
+- impact: medium
+- affected_modules: src/split-tray.wh.cpp
+- description: Global shortcuts opt in, off by default, with Ctrl+Shift+F11/F12 and settings reload. Async mouse polling maps logical primary/secondary buttons. Missing private drag symbols no longer prevent the IconView constructor hook. Clarified visible count and taskbar width limits.
+- related_tests: Test_ReviewHotkeysAreOptInAndReloadable; Test_ReviewSwappedButtonsPreservePrimaryGesture; Test_ReviewMissingOptionalSymbolsKeepConstructor; Test_FloatingTimerDoesNotConsumeCapturedRelease; Test_ReviewSwappedNativeLifecycle
+- verification: tools/coverage.ps1 passed 1599 regression, 504 integration and 491 hosted-XAML checks. Regions85.73%, branches73.86%, functions90.59%, lines87.26%; all configured gates passed. Official upstream source validator: zero warnings. Initial full build passed; final source is to be built again from the release export.
+
+Floating capture now owns release detection; its visual timer no longer discards a click before WM_LBUTTONUP. Swapped-button coverage also drives the full native press/transfer/cancellation lifecycle.

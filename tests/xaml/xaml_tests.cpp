@@ -1394,6 +1394,29 @@ void Test_EmbeddedDropTargetsFollowPanelBounds() {
     DestroyWindow(t.owner);
 }
 
+void Test_SecondaryChevronIsAnOverflowDropTarget() {
+    auto settings=EmbeddingSettings(); settings.maxVisibleIcons=1;
+    auto t=MakeThreeIcons(settings);
+    auto chevron=CellsOf(t.tray)[0];
+    RECT bounds{}; CHECK(X::ElementScreenRect(*t.tray,chevron,&bounds));
+    POINT inside{(bounds.left+bounds.right)/2,(bounds.top+bounds.bottom)/2};
+    auto visible=std::exchange(g_dropWindowVisible,+[](HWND)->BOOL {return TRUE;});
+    CHECK_EQ(X::OverflowDropTargetAt(inside),2);
+    CHECK_EQ(TrayDropTargetAt(inside),2);
+    X::ChevronReleased(chevron,kLeftDisplay,false); Pump();
+    CHECK(X::g_overflowMonitor==kLeftDisplay);
+    CHECK_EQ(X::OverflowDropTargetAt({bounds.right+1000,bounds.top-1000}),0);
+    X::g_overflowFlyout.Hide();
+    // Closed follows the dismissal animation, not the synchronous Hide call.
+    const auto deadline=GetTickCount64()+2000;
+    while (X::g_overflowMonitor && GetTickCount64()<deadline) Pump(10);
+    CHECK(X::g_overflowMonitor==nullptr);
+    settings.maxVisibleIcons=8; ApplySettings(settings); X::RefreshTray(*t.tray);
+    CHECK_EQ(X::OverflowDropTargetAt(inside),0);
+    g_dropWindowVisible=visible;
+    DestroyWindow(t.owner);
+}
+
 void Test_AnOverflowTransferIsNotAnApplicationClick() {
     auto settings=EmbeddingSettings(); settings.maxVisibleIcons=1;
     auto t=MakeThreeIcons(settings);
@@ -1725,6 +1748,7 @@ void Test_UnloadingLetsGoOfEveryXamlObjectTheModHolds() {
     CHECK_EQ(X::g_embeddedTrays.capacity(), 0u);
     CHECK(X::g_faceTemplate == nullptr);
     CHECK(X::g_overflowFlyout == nullptr);
+    CHECK_EQ(X::g_overflowClosedToken.value,0);
     CHECK(X::g_popupTimer == nullptr);
     CHECK(X::g_loadedRevokers.empty());
 
@@ -1783,6 +1807,68 @@ void Choose(wuxc::MenuFlyoutItem const& item) {
     wuxap::MenuFlyoutItemAutomationPeer peer(item);
     peer.as<wuxapr::IInvokeProvider>().Invoke();
     Pump(50);
+}
+
+void Test_OverflowObserverReleasesAStuckRefreshAfterAMissedPointerRelease() {
+    auto settings=EmbeddingSettings(); settings.maxVisibleIcons=1;
+    auto t=MakeThreeIcons(settings);
+    HWND shell=MakeShellStandIn(); g_shellTrayWnd.store(shell);
+    auto cell=X::MakeCell(*t.tray,t.tray->hiddenEntries.front(),false);
+    CHECK(!X::CellPressed(cell,false,0));
+    X::g_drag.observed=true;
+    AddIcon(t.owner,4,L"delta",nullptr);
+    X::RefreshEmbeddedTray();
+    CHECK(X::g_refreshPending);
+    CHECK_EQ(t.tray->hiddenEntries.size(),2u);
+    auto keys=std::exchange(g_dragKeyState,+[](int)->SHORT {return 0;});
+    X::UpdateInsertionPreviewLifetime(); // PointerReleased never reached the popup.
+    g_dragKeyState=keys;
+    CHECK(!X::g_drag.pointerDown);
+    CHECK(X::g_drag.suppressClick);
+    CHECK(TakePosted(shell,GetXamlRefreshMessage()));
+    X::RefreshEmbeddedTray();
+    CHECK(!X::g_refreshPending);
+    CHECK_EQ(t.tray->hiddenEntries.size(),3u);
+    X::CellReleased(cell,false,kLeftDisplay,X::PointerButton::Left,false,NoCapture);
+    Pump(); CHECK(g_received.empty()); // A late release cannot activate the icon.
+    g_shellTrayWnd.store(nullptr); DestroyWindow(shell); DestroyWindow(t.owner);
+}
+
+void Test_CapacityOverflowCanBeShownWithoutHidingItFirst() {
+    auto settings=EmbeddingSettings(); settings.maxVisibleIcons=1;
+    auto t=MakeThreeIcons(settings);
+    CHECK(!IsIconHidden(L"thing.exe#2"));
+    CHECK(CellOf(t.tray,t.b)==nullptr);
+    auto menu=X::BuildTrayContextMenu(t.b,kLeftDisplay);
+    auto show=ItemCalled(menu,L"Show on the tray");
+    CHECK(show!=nullptr);
+    if (show) Choose(show);
+    X::RefreshTray(*t.tray);
+    CHECK(CellOf(t.tray,t.b)!=nullptr);
+    CHECK(CellOf(t.tray,t.a)==nullptr);
+    CHECK(!IsIconHidden(L"thing.exe#1"));
+    CHECK(!IsIconHidden(L"thing.exe#2"));
+    X::RefreshTray(*t.tray);
+    CHECK(CellOf(t.tray,t.b)!=nullptr);
+    DestroyWindow(t.owner);
+}
+
+void Test_OverflowDragReturnsToItsOwnTrayWithoutAnApplicationClick() {
+    auto settings=EmbeddingSettings(); settings.maxVisibleIcons=1;
+    auto t=MakeThreeIcons(settings);
+    auto popupCell=X::MakeCell(*t.tray,t.tray->hiddenEntries.front(),false);
+    CHECK(!X::CellPressed(popupCell,false,0));
+    X::g_drag.screenStart={100,100}; X::g_drag.observed=true;
+    POINT release{100,-100};
+    auto previous=std::exchange(g_dropTargetAt,+[](POINT){return 2;});
+    X::CellReleased(popupCell,false,kLeftDisplay,X::PointerButton::Left,false,NoCapture,&release);
+    g_dropTargetAt=previous;
+    Pump(); X::RefreshTray(*t.tray);
+    CHECK(g_received.empty());
+    CHECK(CellOf(t.tray,t.b)!=nullptr);
+    CHECK(!IsIconHidden(L"thing.exe#2"));
+    CHECK(g_placements.empty());
+    DestroyWindow(t.owner);
 }
 
 void Test_TheModsMenuOnAnIconOffersEveryChoice() {
@@ -2262,7 +2348,11 @@ int main() {
     runner.Run("other-button press closes popup without dragging",Test_OtherButtonPressClosesPendingPopupWithoutStartingADrag);
     runner.Run("capture fallback preserves clicks without movement",Test_AFallbackPressStillClicksWhenItDoesNotMove);
     runner.Run("embedded drop targets follow panel bounds",Test_EmbeddedDropTargetsFollowPanelBounds);
+    runner.Run("secondary chevron is an overflow drop target",Test_SecondaryChevronIsAnOverflowDropTarget);
     runner.Run("overflow transfer does not activate the application",Test_AnOverflowTransferIsNotAnApplicationClick);
+    runner.Run("overflow observer releases deferred refresh after missed release",Test_OverflowObserverReleasesAStuckRefreshAfterAMissedPointerRelease);
+    runner.Run("capacity overflow can be shown without hiding first",Test_CapacityOverflowCanBeShownWithoutHidingItFirst);
+    runner.Run("overflow drag returns to its own tray",Test_OverflowDragReturnsToItsOwnTrayWithoutAnApplicationClick);
     runner.Run("desktop drop does not move or activate an icon",Test_ADesktopDropLeavesTheIconInItsTray);
     runner.Run("vertical gesture starts a drag without activation", Test_AVerticalGestureStartsDraggingWithoutActivatingTheIcon);
     runner.Run("theme feedback uses the element theme",Test_ThemeFeedbackUsesTheElementTheme);

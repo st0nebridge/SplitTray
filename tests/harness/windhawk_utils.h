@@ -191,8 +191,10 @@ inline int& HookSymbolsCallCount() {
     return count;
 }
 
-inline bool HookSymbols(HMODULE, const SYMBOL_HOOK*, size_t) {
+inline bool (*HookSymbolsOverride)(const SYMBOL_HOOK*, size_t) = nullptr;
+inline bool HookSymbols(HMODULE, const SYMBOL_HOOK* hooks, size_t count) {
     HookSymbolsCallCount()++;
+    if (HookSymbolsOverride) return HookSymbolsOverride(hooks, count);
     return false;
 }
 

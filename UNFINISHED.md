@@ -51,3 +51,34 @@ regression/integration/XAML suites, coverage gates and isolated storm probe are
 green; details are in docs/direct-dragging.md. No open defect is known in that
 requested follow-up. The hardware/platform and original-causality limits above
 remain the applicable unverified areas.
+
+
+## Catalog 1.4.6 update (2026-11-01)
+
+PR https://github.com/ramensoftware/windhawk-mods/pull/6830 contains the exact
+released source. The required /ai-review was requested; inspect its findings,
+address verified issues, then use /ready-for-reviewer. Human review/merge and
+catalog publication remain external steps before Windhawk offers the update.
+Do not enable the catalog copy beside the active development copy while waiting.
+
+All catalog validation and compatibility checks are green. Current label: waiting-for-ai-review. The bot result is the next required input before maintainer handoff.
+
+
+## Overflow follow-up (development 1.4.7)
+
+Capacity Show promotion, same-tray overflow returns, chevron/popup drop targets,
+and missed-release refresh recovery are implemented and tested. Final coverage
+and DLL build pass; installed without restart and with settings/state preserved.
+Physical popup dragging, live Show behavior, touch/pen and ARM64 runtime still
+need confirmation. Capacity limits are preserved; Show promotes an icon rather
+than increasing the visible count. The specific historic Unsloth occurrences
+were not captured, so no single cause is asserted for every occurrence.
+This build is local; release tag1.4.6 and catalog PR6830 were not changed.
+
+1.4.7 live confirmation received: both transfer directions and Show on the tray work. That requested overflow interaction is verified; touch/pen, ARM64 and longer-term recurrence remain outside the observed result.
+
+Catalog PR6830 review returned at 2026-11-01T09:57:49Z: three requested changes remain before maintainer handoff: make global hotkeys configurable/opt-in; honor swapped physical mouse buttons in gesture polling; make the new native drag symbol hooks optional without disabling the existing IconView hook. Review: https://github.com/ramensoftware/windhawk-mods/pull/6830#issuecomment-6556420407. These are recorded follow-up work; /ready-for-reviewer has not been sent. The optional maxVisibleIcons setting-description correction is also relevant: its count applies to floating trays, and zero still retains the embedded width budget.
+
+## 1.4.7 catalog review remediation
+
+All three requested fixes and the visible-count description correction are implemented. Global shortcuts now opt in with Ctrl+Shift+F11/F12; swapped-button polling is mapped and floating capture owns releases; drag symbols are optional. Final validation/publication pending. Optional broad formatting, shared-order refactoring, delayed native icon lookup and sorting optimizations are deferred to avoid mixing unrelated behavior changes into this release.

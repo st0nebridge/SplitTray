@@ -90,11 +90,17 @@ With two displays there is one extra tray, tray 2, on the second display.
   <img src="docs/images/arrange.png" width="400" alt="The arrange window, with one list for the primary tray and one for tray 2">
 </p>
 
-**Ctrl+Alt+T** opens Arrange from anywhere. **Ctrl+Alt+Shift+T** cycles
+Global shortcuts are off by default. Enable them in Settings: **Ctrl+Shift+F11** opens Arrange from anywhere. **Ctrl+Shift+F12** cycles
 floating trays. On an embedded icon, **Ctrl+Shift+F10** opens Split Tray's menu;
 Shift+F10 continues to open the application's menu. The chevron and empty
 handle are buttons reachable by keyboard and screen readers. Shortcut conflicts
 are reported in the mod log.
+
+Drag from Split Tray's overflow back onto its tray bar, or onto another tray,
+to reveal and move the icon. Drop onto a secondary chevron or its open popup to
+keep an icon in overflow. **Show on the tray** also works for icons overflowed
+by the visible-count or width limit: it moves the chosen icon ahead of the other
+icons, within the same space budget. Another icon can take its overflow place.
 
 Every move is remembered, including across restarts, and it outranks the rules.
 **Reset moved icons** in the menu hands every icon back to the rules. An icon

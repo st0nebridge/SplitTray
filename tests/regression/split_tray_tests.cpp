@@ -5099,7 +5099,7 @@ void Test_ArrangeOrderAndSearch() {
     CHECK(MatchesIconSearch(L"Discord.exe notification",L"DISCORD"));
     CHECK(!MatchesIconSearch(L"Discord.exe",L"audio"));
     CHECK(MatchesIconSearch(L"anything",L""));
-    CHECK(TrayStatusText().find(L"Ctrl+Alt+T") != std::wstring::npos);
+    CHECK(TrayStatusText().find(L"off by default") != std::wstring::npos);
     ArrangeReorder(-1,1);
     ArrangeFollowRules(-1);
     FollowRulesForIcon(L"");
@@ -5170,6 +5170,49 @@ void Test_TrayDropsValidateSourceAndDestination() {
     DestroyWindow(owner);
 }
 
+void Test_OverflowDropsHideAndRevealWithoutLeakingTheChoice() {
+    Settings settings=DefaultSettings(); settings.defaultTray=Destination::Secondary;
+    settings.extraTrays={{0,Corner::BottomLeft}};
+    ResetStore(settings,true);
+    HWND owner=MakeOwnerWindow(); bool forward=true;
+    Feed(MakePayload(NIM_ADD,WireHandle(owner),7,NIF_MESSAGE|NIF_TIP,L"overflow",L"C:\\test\\overflow.exe"),&forward);
+    const auto serial=g_icons.front().serial;
+    auto oldTarget=std::exchange(g_dropTargetAt,+[](POINT p){return p.y<0 ? 3 : 2;});
+    auto oldOverflow=std::exchange(g_overflowDropTargetAt,+[](POINT p){return p.x<0 ? (p.y<0 ? 3 : 2) : 0;});
+    CHECK(DropIconAt(serial,2,{-10,10}));
+    CHECK(IsIconHidden(L"overflow.exe#7"));
+    CHECK(!DropIconAt(serial,2,{-10,10},true)); // Still in the source popup.
+    CHECK(DropIconAt(serial,2,{10,10},true));
+    CHECK(!IsIconHidden(L"overflow.exe#7"));
+    CHECK(IconOrderSnapshot().front()==L"overflow.exe#7");
+    CHECK(g_placements.empty()); // Revealing does not rewrite tray routing.
+    // Lost/refused XAML capture uses the same observer, preserving overflow origin.
+    auto oldWorker=g_trayWnd.exchange(owner);
+    auto oldShell=g_shellTrayWnd.exchange(owner);
+    auto oldKeys=std::exchange(g_dragKeyState,+[](int)->SHORT {return 0;});
+    auto oldCursor=std::exchange(g_dragCursor,+[](POINT* point)->BOOL {*point={10,10};return TRUE;});
+    SetIconHidden(L"overflow.exe#7",true);
+    QueueGesturePress(serial,2,{0,0},true);
+    BeginNativeGesture(owner);
+    CHECK(g_nativeGesture.fromOverflow);
+    PollNativeGesture(owner);
+    CHECK_EQ(g_pendingDrops.size(),1u);
+    if (!g_pendingDrops.empty()) CHECK(g_pendingDrops.front().fromOverflow);
+    ProcessTrayDrops();
+    CHECK(!IsIconHidden(L"overflow.exe#7"));
+    CancelNativeGesture(owner);
+    g_trayWnd.store(oldWorker); g_shellTrayWnd.store(oldShell);
+    g_dragKeyState=oldKeys; g_dragCursor=oldCursor;
+    CHECK(DropIconAt(serial,2,{-10,-10},true));
+    CHECK(IsIconHidden(L"overflow.exe#7"));
+    CHECK_EQ(ShownTrayOf(L"overflow.exe#7"),3);
+    CHECK(DropIconAt(serial,3,{10,10},true));
+    CHECK(!IsIconHidden(L"overflow.exe#7"));
+    CHECK_EQ(ShownTrayOf(L"overflow.exe#7"),2);
+    g_dropTargetAt=oldTarget; g_overflowDropTargetAt=oldOverflow;
+    DestroyWindow(owner);
+}
+
 void Test_ForgedDropWakeCannotSupplyATransfer() {
     Settings settings=DefaultSettings(); settings.defaultTray=Destination::Secondary;
     ResetStore(settings,true);
@@ -5225,7 +5268,7 @@ void Test_PrimaryIconHitTestingRejectsAmbiguity() {
 }
 
 
-SHORT WINAPI DragTestKeyDown(int key) { return key==VK_LBUTTON ? static_cast<SHORT>(0x8000) : 0; }
+SHORT WINAPI DragTestKeyDown(int key) { return key==PrimaryButtonKey() ? static_cast<SHORT>(0x8000) : 0; }
 SHORT WINAPI DragTestKeyUp(int) { return 0; }
 SHORT WINAPI DragTestEscape(int key) { return key==VK_ESCAPE ? static_cast<SHORT>(0x8000) : 0; }
 BOOL WINAPI DragTestCursor(POINT* point) { *point={90,5}; return TRUE; }
@@ -5483,11 +5526,128 @@ void Test_FloatingInsertionLineUsesTheActualDropCell() {
     auto invalid=InsertionLineRect(layout,5,5,true,96); CHECK(IsRectEmpty(&invalid));
 }
 
+
+void Test_ReviewHotkeysAreOptInAndReloadable() {
+    CHECK(!DefaultSettings().enableGlobalHotkeys);
+    auto oldSettings = g_settings;
+    auto reg = g_registerHotKey;
+    auto unreg = g_unregisterHotKey;
+    static int registrations, removals;
+    registrations = removals = 0;
+    g_registerHotKey = +[](HWND, int id, UINT modifiers, UINT key)->BOOL {
+        CHECK(!(modifiers & MOD_ALT));
+        CHECK(modifiers & MOD_NOREPEAT);
+        CHECK_EQ(key, id == 1 ? VK_F11 : VK_F12);
+        ++registrations;
+        return TRUE;
+    };
+    g_unregisterHotKey = +[](HWND, int)->BOOL { ++removals; return TRUE; };
+    g_settings.enableGlobalHotkeys = false;
+    ConfigureGlobalHotkeys(nullptr);
+    CHECK_EQ(registrations, 0);
+    g_settings.enableGlobalHotkeys = true;
+    ConfigureGlobalHotkeys(nullptr);
+    CHECK_EQ(registrations, 2);
+    g_settings.enableGlobalHotkeys = false;
+    ConfigureGlobalHotkeys(nullptr);
+    CHECK_EQ(registrations, 2);
+    CHECK_EQ(removals, 6);
+    g_settings = oldSettings;
+    g_registerHotKey = reg;
+    g_unregisterHotKey = unreg;
+}
+void Test_ReviewSwappedButtonsPreservePrimaryGesture() {
+    auto metrics = g_inputSystemMetrics;
+    auto keys = g_dragKeyState;
+    auto cursor = g_dragCursor;
+    g_inputSystemMetrics = +[](int)->int { return 1; };
+    CHECK_EQ(PrimaryButtonKey(), VK_RBUTTON);
+    CHECK_EQ(SecondaryButtonKey(), VK_LBUTTON);
+    g_dragKeyState = +[](int k)->SHORT { return k == VK_RBUTTON ? SHORT(0x8000) : 0; };
+    g_dragCursor = DragTestCursor;
+    g_nativeGesture = {123, 2, {5,5}, GetTickCount64(), false};
+    PollNativeGesture(nullptr);
+    CHECK_EQ(g_nativeGesture.serial, 123u);
+    CHECK(g_nativeGesture.dragging);
+    g_dragKeyState = +[](int k)->SHORT { return k == VK_LBUTTON ? SHORT(0x8000) : 0; };
+    PollNativeGesture(nullptr);
+    CHECK_EQ(g_nativeGesture.serial, 0u);
+    CHECK(g_pendingDrops.empty());
+    g_inputSystemMetrics = +[](int)->int { return 0; };
+    CHECK_EQ(PrimaryButtonKey(), VK_LBUTTON);
+    CHECK_EQ(SecondaryButtonKey(), VK_RBUTTON);
+    g_inputSystemMetrics = metrics;
+    g_dragKeyState = keys;
+    g_dragCursor = cursor;
+}
+
+void Test_ReviewSwappedNativeLifecycle() {
+    auto metrics = g_inputSystemMetrics;
+    g_inputSystemMetrics = +[](int)->int { return 1; };
+    Test_NativeGestureLifecycleQueuesOnlyAValidRelease();
+    g_inputSystemMetrics = metrics;
+}
+
+void Test_ReviewMissingOptionalSymbolsKeepConstructor() {
+    using namespace SplitTrayXaml;
+    auto tried = g_systemTraySymbolsTried.exchange(false);
+    auto hooked = g_systemTraySymbolsHooked.exchange(false);
+    auto callback = WindhawkUtils::HookSymbolsOverride;
+    WindhawkUtils::HookSymbolsOverride = +[](const WindhawkUtils::SYMBOL_HOOK* hooks, size_t n)->bool {
+        CHECK_EQ(n, 4u);
+        int optional = 0, required = 0;
+        for (size_t i = 0; i < n; ++i) {
+            if (hooks[i].symbols[0].find(L"IconView::IconView") != std::wstring_view::npos) {
+                CHECK(!hooks[i].optional);
+                ++required;
+            } else {
+                CHECK(hooks[i].optional);
+                ++optional;
+            }
+        }
+        CHECK_EQ(optional, 3);
+        CHECK_EQ(required, 1);
+        return true; // constructor resolves, every optional symbol missing
+    };
+    CHECK(HookSystemTraySymbols(reinterpret_cast<HMODULE>(1)));
+    CHECK(g_systemTraySymbolsHooked.load());
+    CHECK(!HookSystemTraySymbols(reinterpret_cast<HMODULE>(1)));
+    NotifyIconPressed_Hook(nullptr, nullptr);
+    NativeDragBegin_Hook(nullptr, nullptr, nullptr);
+    NativeDragMove_Hook(nullptr, nullptr, nullptr);
+    WindhawkUtils::HookSymbolsOverride = callback;
+    g_systemTraySymbolsTried.store(tried);
+    g_systemTraySymbolsHooked.store(hooked);
+}
+
+
+void Test_FloatingTimerDoesNotConsumeCapturedRelease() {
+    HWND window = MakeOwnerWindow();
+    SetWindowLongPtrW(window, GWLP_USERDATA, 97);
+    FloatingTray tray;
+    tray.wnd = window;
+    tray.gesture = {123, 97, {0,0}, GetTickCount64(), false};
+    g_floatingTrays.emplace(97, std::move(tray));
+    auto keys = std::exchange(g_dragKeyState, DragTestKeyUp);
+    FloatingTrayProc(window, WM_TIMER, 2, 0);
+    CHECK_EQ(g_floatingTrays.at(97).gesture.serial, 123u);
+    FloatingTrayProc(window, WM_CAPTURECHANGED, 0, 0);
+    CHECK_EQ(g_floatingTrays.at(97).gesture.serial, 0u);
+    g_dragKeyState = keys;
+    g_floatingTrays.erase(97);
+    DestroyWindow(window);
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     printf("split-tray regression tests\n\n");
 
     TestRunner runner;
+    runner.Run("floating timer preserves captured release", Test_FloatingTimerDoesNotConsumeCapturedRelease);
+    runner.Run("swapped native full lifecycle", Test_ReviewSwappedNativeLifecycle);
+    runner.Run("missing optional symbols preserve constructor", Test_ReviewMissingOptionalSymbolsKeepConstructor);
+    runner.Run("review hotkeys opt in", Test_ReviewHotkeysAreOptInAndReloadable);
+    runner.Run("review swapped buttons", Test_ReviewSwappedButtonsPreservePrimaryGesture);
     runner.Run("ghost icon blends at forty percent without changing source",Test_GhostIconBlendsAtFortyPercentWithoutChangingItsSource);
     runner.Run("floating insertion line uses actual drop cell",Test_FloatingInsertionLineUsesTheActualDropCell);
     runner.Run("XAML drag acceptance requires a known tray source",Test_TrayDragAcceptanceRequiresAKnownSource);
@@ -5499,6 +5659,7 @@ int main() {
     runner.Run("native press hook forwards original",Test_NativePressHookAlwaysForwardsTheOriginal);
     runner.Run("native gesture worker lifecycle",Test_NativeGestureLifecycleQueuesOnlyAValidRelease);
     runner.Run("tray gesture cancellation and both axes",Test_TrayGesturesCancelAndRecognizeBothAxes);
+    runner.Run("overflow drops hide and reveal without leaking choices",Test_OverflowDropsHideAndRevealWithoutLeakingTheChoice);
     runner.Run("forged drop wake supplies no transfer",Test_ForgedDropWakeCannotSupplyATransfer);
     runner.Run("tray drops validate source and destination",Test_TrayDropsValidateSourceAndDestination);
     runner.Run("native icon hit testing rejects ambiguity",Test_PrimaryIconHitTestingRejectsAmbiguity);

@@ -251,3 +251,11 @@ Two files are kept up to date with the code:
   numbered entry with its reasoning. Read it before changing an area it covers.
   A change that goes against an entry updates the entry rather than quietly
   contradicting it.
+
+## Interface stress and recovery tools
+
+`tools/performance.ps1 -Runs 3` runs the self-ending hosted tray stress gate.
+Its budgets, baseline and limits are in [interface-completion.md](interface-completion.md).
+`tools/configuration.ps1 -Action Export -Interactive` saves settings and all
+remembered state through a file picker; use Import only while the selected mod
+is disabled. Configuration regression tests use their own disposable HKCU keys.

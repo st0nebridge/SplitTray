@@ -100,6 +100,14 @@ if ($LASTEXITCODE -ne 0) { throw "Compile check failed with exit code $LASTEXITC
 Write-Host '    clean' -ForegroundColor Green
 
 if (-not $SkipTests) {
+    Write-Step 'Redeploy settings stay data (isolated installer)'
+    & python (Join-Path $repoRoot 'tests\regression\test_redeploy.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Redeploy security tests FAILED' }
+
+    Write-Step 'Configuration backup and restore (isolated registry)'
+    & python (Join-Path $repoRoot 'tests\regression\test_configuration.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Configuration tests FAILED' }
+
     Write-Step 'Regression tests'
     $testExe = Join-Path $buildDir 'split_tray_tests.exe'
     $testFlags = @(

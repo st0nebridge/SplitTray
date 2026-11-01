@@ -1072,6 +1072,8 @@ void ResetStore(const Settings& settings, bool secondaryAvailable) {
     RecomputeGeometryLocked(g_enumerateMonitors());
     g_placements.clear();
     g_placementsLoaded = false;
+    g_iconOrder.clear();
+    g_iconOrderLoaded = false;
     g_hidden.clear();
     g_hiddenLoaded = false;
     g_lastSeen.clear();
@@ -2556,6 +2558,85 @@ void Test_FileNameOfHandlesEveryShape() {
     CHECK(FileNameOf(L"C:/a/b/c.exe") == L"c.exe");
     CHECK(FileNameOf(L"") == L"");
     CHECK(FileNameOf(L"C:\\a\\") == L"");
+}
+
+
+// Burst traffic must leave one latest-state refresh, not one costly pass per icon.
+int DrainRefreshes(HWND window) {
+    MSG message;
+    int count = 0;
+    while (PeekMessageW(&message, window, WM_ST_REFRESH, WM_ST_REFRESH, PM_REMOVE)) {
+        ++count;
+    }
+    return count;
+}
+
+void Test_IconBurstsQueueOneWorkerRefresh() {
+    HWND window = CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0,
+                                  HWND_MESSAGE, nullptr, nullptr, nullptr);
+    CHECK(window != nullptr);
+    const HWND previous = g_trayWnd.exchange(window);
+    for (int i = 0; i < 1000; ++i) NotifyTrayWindow(WM_ST_REFRESH);
+    CHECK_EQ(DrainRefreshes(window), 1);
+    ControllerProc(window, WM_ST_REFRESH, 0, 0);
+    NotifyTrayWindow(WM_ST_REFRESH);
+    CHECK_EQ(DrainRefreshes(window), 1);
+    ControllerProc(window, WM_ST_REFRESH, 0, 0);
+    g_trayWnd.store(previous);
+    DestroyWindow(window);
+}
+
+void Test_RefreshForAReplacedWindowIsNotLost() {
+    HWND first = CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0,
+                                 HWND_MESSAGE, nullptr, nullptr, nullptr);
+    HWND second = CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0,
+                                  HWND_MESSAGE, nullptr, nullptr, nullptr);
+    const HWND previous = g_trayWnd.exchange(first);
+    NotifyTrayWindow(WM_ST_REFRESH);
+    g_trayWnd.store(second);
+    NotifyTrayWindow(WM_ST_REFRESH);
+    CHECK_EQ(DrainRefreshes(first), 1);
+    // A stale delivery must not clear the pending wake for the new window.
+    ControllerProc(first, WM_ST_REFRESH, 0, 0);
+    NotifyTrayWindow(WM_ST_REFRESH);
+    CHECK_EQ(DrainRefreshes(second), 1);
+    ControllerProc(second, WM_ST_REFRESH, 0, 0);
+    g_trayWnd.store(previous);
+    DestroyWindow(first);
+    DestroyWindow(second);
+}
+
+
+void Test_CachedDisplaysStillResizeFloatingTrays() {
+    Settings settings = DefaultSettings();
+    settings.defaultTray = Destination::Secondary;
+    settings.embedInTaskbar = false;
+    ResetStore(settings, true);
+    const int before = g_floatingLayouts.at(2).width;
+    bool forward;
+    Feed(MakePayload(NIM_ADD, 0xAB01, 1, NIF_TIP, L"one", L"a.exe"), &forward);
+    Feed(MakePayload(NIM_ADD, 0xAB02, 2, NIF_TIP, L"two", L"b.exe"), &forward);
+    SyncFloatingTrays(true, false);
+    CHECK(g_floatingLayouts.at(2).width > before);
+    Feed(MakePayload(NIM_DELETE, 0xAB02, 2, 0, L"", L""), &forward);
+    SyncFloatingTrays(true, false);
+    CHECK_EQ(g_floatingLayouts.at(2).width, before);
+    DestroyFloatingTrays();
+}
+
+int g_refreshMonitorQueries = 0;
+std::vector<MonitorInfoEntry> CountRefreshMonitorQueries() {
+    ++g_refreshMonitorQueries;
+    return TestMonitors();
+}
+void Test_IconRefreshDoesNotEnumerateDisplays() {
+    ResetStore(DefaultSettings(), true);
+    auto previous = g_enumerateMonitors;
+    g_refreshMonitorQueries = 0;
+    g_enumerateMonitors = CountRefreshMonitorQueries;
+    ControllerProc(nullptr, WM_ST_REFRESH, 0, 0);
+    CHECK_EQ(g_refreshMonitorQueries, 0);
+    g_enumerateMonitors = previous;
 }
 
 }  // namespace
@@ -4745,7 +4826,9 @@ void Test_AFloatingTraysMenuOffersEveryOtherTrayAndDoesWhatIsChosen() {
     }
     FloatingTrayMenu menu = BuildFloatingTrayMenu(2, view.serials[0]);
     CHECK(menu.menu != nullptr);
-    CHECK_EQ(GetMenuItemCount(menu.menu), 7);
+    CHECK_EQ(GetMenuItemCount(menu.menu), 9);
+    CHECK_WSTR(MenuText(menu.menu, 7), L"Follow rules for this icon");
+    CHECK_WSTR(MenuText(menu.menu, 8), L"Toggle hidden for this icon");
     CHECK(MenuText(menu.menu, 0) == L"Move to the primary tray");
     CHECK(MenuText(menu.menu, 1).starts_with(L"Move to tray 3"));
     CHECK_WSTR(MenuText(menu.menu, 3), L"Move an icon to this tray");
@@ -4972,11 +5055,462 @@ void Test_AFloatingTrayIsAToolBarOfNamedButtonsForScreenReaders() {
     g_floatingTrays.erase(2);
 }
 
+
+void Test_FloatingTraysUseRememberedOrderAndOverflow() {
+    ForgetPlacements();
+    Settings s = DefaultSettings(); s.defaultTray = Destination::Secondary;
+    ResetStore(s, true);
+    bool forward = true;
+    Feed(MakePayload(NIM_ADD, 0x5E00, 1, NIF_MESSAGE | NIF_TIP, L"alpha", L"C:\\a\\app.exe"), &forward);
+    Feed(MakePayload(NIM_ADD, 0x5E00, 2, NIF_MESSAGE | NIF_TIP, L"beta", L"C:\\a\\app.exe"), &forward);
+    WriteStoredString(kIconOrderValue, L"app.exe#2\napp.exe#1");
+    auto view = FloatingViewOf(2, false);
+    CHECK_EQ(view.serials.size(), 2u);
+    CHECK(view.tips.size() == 2 && view.tips[0] == L"beta");
+    SetIconHidden(L"app.exe#1", true);
+    view = FloatingViewOf(2, false);
+    CHECK(view.serials.size() == 2 && view.serials[0] == 0);
+    auto menu = BuildFloatingTrayMenu(2, 0);
+    CHECK(GetSubMenu(menu.menu, 0) != nullptr);
+    CHECK(menu.hidden.size() == 1);
+    if (!menu.hidden.empty()) {
+        HMENU hidden = GetSubMenu(menu.menu,0);
+        HMENU actions = GetSubMenu(hidden,0);
+        CHECK(actions != nullptr && GetMenuItemCount(actions) == 3);
+        RunFloatingTrayMenuCommand(menu,2,FloatingTrayMenu::kHiddenShow);
+        CHECK(!IsIconHidden(L"app.exe#1"));
+    }
+    DestroyMenu(menu.menu);
+    SetIconHidden(L"app.exe#1", false);
+    SetIconOrder({});
+}
+
+
+void Test_ReorderPreservesAbsentIcons() {
+    SetIconOrder({L"absent",L"b",L"a"});
+    CHECK(ReorderIconKeys({L"a",L"b"},0,1));
+    CHECK(IconOrderSnapshot() == (std::vector<std::wstring>{L"b",L"a",L"absent"}));
+    CHECK(!ReorderIconKeys({L"a"},0,1));
+    CHECK(!ReorderIconKeys({L"a"},0,0));
+    SetIconOrder({});
+}
+
+void Test_ArrangeOrderAndSearch() {
+    CHECK(MatchesIconSearch(L"Discord.exe notification",L"DISCORD"));
+    CHECK(!MatchesIconSearch(L"Discord.exe",L"audio"));
+    CHECK(MatchesIconSearch(L"anything",L""));
+    CHECK(TrayStatusText().find(L"Ctrl+Alt+T") != std::wstring::npos);
+    ArrangeReorder(-1,1);
+    ArrangeFollowRules(-1);
+    FollowRulesForIcon(L"");
+}
+
+void Test_OrderSnapshotsStayConsistentDuringEdits() {
+    SetIconOrder({L"a",L"b",L"c"});
+    const auto snapshot=IconOrderSnapshot();
+    std::thread writer([] { for (int i=0;i<100;++i) SetIconOrder({L"c",L"b",L"a"}); });
+    for (int i=0;i<100;++i) {
+        CHECK(OrderPositionIn(snapshot,L"a") < OrderPositionIn(snapshot,L"b"));
+        CHECK(OrderPositionIn(snapshot,L"c") < OrderPositionIn(snapshot,L"unknown"));
+    }
+    writer.join();
+    CHECK(IconOrderSnapshot() == (std::vector<std::wstring>{L"c",L"b",L"a"}));
+    SetIconOrder({});
+}
+
+
+void Test_TrayGesturesCancelAndRecognizeBothAxes() {
+    TrayGesture g{17,1,{100,100},1000,false};
+    CHECK(!g.Update({102,103},true,false,1010,5,5));
+    CHECK(!g.dragging);
+    CHECK(!g.Update({100,110},true,false,1020,5,5));
+    CHECK(g.dragging);
+    CHECK(g.Update({100,110},false,false,1030,5,5));
+    g={17,2,{-100,100},1000,false};
+    CHECK(g.Update({-110,100},false,false,1010,5,5));
+    g={17,1,{0,0},1000,true};
+    CHECK(!g.Update({50,50},false,true,1010,5,5));
+    CHECK_EQ(g.serial,0u);
+    g={17,1,{0,0},1000,true};
+    CHECK(!g.Update({50,50},false,false,31000,5,5));
+    CHECK_EQ(g.serial,0u);
+    CHECK(!g.Update({50,50},false,false,31001,5,5));
+}
+
+void Test_TrayDropsValidateSourceAndDestination() {
+    Settings settings=DefaultSettings();
+    settings.defaultTray=Destination::Secondary;
+    settings.extraTrays={{0,Corner::BottomLeft},{9,Corner::TopLeft}};
+    ResetStore(settings,true);
+    HWND owner=MakeOwnerWindow();
+    bool forward=true;
+    Feed(MakePayload(NIM_ADD,WireHandle(owner),7,NIF_MESSAGE|NIF_TIP,L"drag",L"C:\\test\\drag.exe"),&forward);
+    CHECK(!forward);
+    const uint64_t serial=g_icons.front().serial;
+    const auto original=std::exchange(g_dropTargetAt,+[](POINT p){return static_cast<int>(p.x);});
+    CHECK(!DropIconAt(serial,2,{0,0})); // desktop
+    CHECK(!DropIconAt(serial,2,{2,0})); // same tray
+    CHECK(!DropIconAt(serial,3,{1,0})); // icon moved since press
+    CHECK(!DropIconAt(serial+1000,2,{1,0})); // icon deleted
+    CHECK(!DropIconAt(serial,2,{4,0})); // disconnected display
+    CHECK(g_placements.empty());
+    CHECK(DropIconAt(serial,2,{3,0}));
+    CHECK_EQ(ShownTrayOf(L"drag.exe#7"),3);
+    CHECK(DropIconAt(serial,3,{1,0}));
+    SettleWithExplorer();
+    CHECK(ForwardedToShell(L"drag.exe#7"));
+    CHECK(DropIconAt(serial,1,{2,0}));
+    CHECK_EQ(ShownTrayOf(L"drag.exe#7"),2);
+    SettleWithExplorer();
+    CHECK(!ForwardedToShell(L"drag.exe#7"));
+    g_unloading.store(true);
+    CHECK(!DropIconAt(serial,2,{1,0}));
+    g_unloading.store(false);
+    g_dropTargetAt=original;
+    DestroyWindow(owner);
+}
+
+void Test_ForgedDropWakeCannotSupplyATransfer() {
+    Settings settings=DefaultSettings(); settings.defaultTray=Destination::Secondary;
+    ResetStore(settings,true);
+    HWND owner=MakeOwnerWindow();
+    bool forward=true;
+    Feed(MakePayload(NIM_ADD,WireHandle(owner),7,NIF_MESSAGE|NIF_TIP,L"wake",L"C:\\test\\wake.exe"),&forward);
+    const uint64_t serial=g_icons.front().serial;
+    auto target=std::exchange(g_dropTargetAt,+[](POINT){return 1;});
+    { std::lock_guard<std::mutex> lock(g_dropMutex); g_pendingDrops.clear(); }
+    // A registered message is public. Its arguments must never be trusted as
+    // a serial, destination, or pointer; only the internal queue supplies work.
+    ShellTrayWndSubclassProc(owner,GetTrayDropMessage(),static_cast<WPARAM>(serial),1,0);
+    CHECK(g_pendingDrops.empty());
+    CHECK(g_placements.empty());
+    CHECK_EQ(ShownTrayOf(L"wake.exe#7"),2);
+    g_dropTargetAt=target;
+    DestroyWindow(owner);
+}
+
+void Test_PrimaryIconHitTestingRejectsAmbiguity() {
+    Settings settings=DefaultSettings(); settings.defaultTray=Destination::Primary;
+    ResetStore(settings,true);
+    HWND owner=MakeOwnerWindow();
+    bool forward=false;
+    for (UINT id : {7u,8u}) {
+        const auto payload=MakePayload(NIM_ADD,WireHandle(owner),id,NIF_MESSAGE|NIF_TIP,L"primary",L"C:\\test\\drag.exe");
+        Feed(payload,&forward);
+        std::lock_guard<std::mutex> lock(g_mutex);
+        RecordShellAnswerLocked(Parsed(payload),true);
+    }
+    const uint64_t first=g_primaryOnly[0].serial;
+    auto original=g_nativeIconRect;
+    g_nativeIconRect=+[](const NOTIFYICONIDENTIFIER* id,RECT* rect)->HRESULT {
+        CHECK(g_mutex.try_lock()); // Native shell query must not reenter under store lock.
+        g_mutex.unlock();
+        CHECK_EQ(id->cbSize,sizeof(*id));
+        *rect={static_cast<LONG>(id->uID*10),0,static_cast<LONG>(id->uID*10+10),10};
+        return S_OK;
+    };
+    CHECK_EQ(PrimaryIconAt({75,5}),first);
+    CHECK_EQ(PrimaryIconAt({-100,5}),0u);
+    g_nativeIconRect=+[](const NOTIFYICONIDENTIFIER*,RECT* rect)->HRESULT {*rect={0,0,20,20};return S_OK;};
+    CHECK_EQ(PrimaryIconAt({5,5}),0u);
+    g_primaryOnly[1].shellHidden=true;
+    CHECK_EQ(PrimaryIconAt({5,5}),first);
+    g_primaryOnly[0].state=NIS_HIDDEN;
+    CHECK_EQ(PrimaryIconAt({5,5}),0u);
+    g_primaryOnly[0].state=0;
+    g_nativeIconRect=+[](const NOTIFYICONIDENTIFIER*,RECT*)->HRESULT {return E_FAIL;};
+    CHECK_EQ(PrimaryIconAt({5,5}),0u);
+    g_nativeIconRect=original;
+    DestroyWindow(owner);
+}
+
+
+SHORT WINAPI DragTestKeyDown(int key) { return key==VK_LBUTTON ? static_cast<SHORT>(0x8000) : 0; }
+SHORT WINAPI DragTestKeyUp(int) { return 0; }
+SHORT WINAPI DragTestEscape(int key) { return key==VK_ESCAPE ? static_cast<SHORT>(0x8000) : 0; }
+BOOL WINAPI DragTestCursor(POINT* point) { *point={90,5}; return TRUE; }
+void Test_NativeGestureLifecycleQueuesOnlyAValidRelease() {
+    Settings settings=DefaultSettings(); settings.defaultTray=Destination::Primary;
+    ResetStore(settings,true);
+    HWND owner=MakeOwnerWindow();
+    const auto payload=MakePayload(NIM_ADD,WireHandle(owner),7,NIF_MESSAGE|NIF_TIP,L"native",L"C:\\test\\drag.exe");
+    bool forward=false; Feed(payload,&forward);
+    { std::lock_guard<std::mutex> lock(g_mutex); RecordShellAnswerLocked(Parsed(payload),true); }
+    const uint64_t serial=g_primaryOnly[0].serial;
+    auto oldRect=g_nativeIconRect;
+    g_nativeIconRect=+[](const NOTIFYICONIDENTIFIER*,RECT* r)->HRESULT {*r={0,0,100,20};return S_OK;};
+    auto oldKey=g_dragKeyState; auto oldCursor=g_dragCursor;
+    auto oldSetCursor=g_setDragCursor;
+    g_setDragCursor=+[](HCURSOR cursor)->HCURSOR {return cursor;};
+    HWND oldWorker=g_trayWnd.exchange(owner), oldShell=g_shellTrayWnd.exchange(owner);
+    g_dragKeyState=DragTestKeyDown; g_dragCursor=DragTestCursor;
+    ObserveNativeIconPress({5,5});
+    CHECK_EQ(g_pendingNativePress.serial,serial);
+    ControllerProc(owner,WM_ST_NATIVE_PRESS,0,0);
+    CHECK_EQ(g_pendingNativePress.serial,0u);
+    CHECK_EQ(g_nativeGesture.serial,serial);
+    PollNativeGesture(owner);
+    CHECK(g_nativeGesture.dragging);
+    CHECK(g_pendingDrops.empty());
+    g_dragKeyState=DragTestKeyUp;
+    ControllerProc(owner,WM_TIMER,2,0);
+    CHECK_EQ(g_nativeGesture.serial,0u);
+    CHECK_EQ(g_pendingDrops.size(),1u);
+    CHECK_EQ(g_pendingDrops[0].serial,serial);
+    auto oldTarget=std::exchange(g_dropTargetAt,+[](POINT){return 2;});
+    ProcessTrayDrops();
+    CHECK(g_pendingDrops.empty());
+    CHECK_EQ(ShownTrayOf(L"drag.exe#7"),2);
+    // Escape, timeout, unloaded code and a press without a left button do not enqueue.
+    g_nativeGesture={serial,1,{5,5},GetTickCount64(),true};
+    g_dragKeyState=DragTestEscape; PollNativeGesture(owner);
+    CHECK(!g_nativeGesture.serial && g_pendingDrops.empty());
+    g_nativeGesture={serial,1,{5,5},GetTickCount64()-30001,true};
+    g_dragKeyState=DragTestKeyDown; PollNativeGesture(owner);
+    CHECK(!g_nativeGesture.serial && g_pendingDrops.empty());
+    g_dragKeyState=DragTestKeyUp; ObserveNativeIconPress({5,5});
+    CHECK_EQ(g_pendingNativePress.serial,0u);
+    g_unloading.store(true); QueueTrayDrop(serial,2,{5,5});
+    CHECK(g_pendingDrops.empty()); g_unloading.store(false);
+    g_pendingNativePress={serial,{0,0},GetTickCount64()};
+    BeginNativeGesture(owner); CancelNativeGesture(owner);
+    CHECK(!g_nativeGesture.serial && !g_pendingNativePress.serial && g_pendingDrops.empty());
+
+    // The same observer transfers an embedded source even after capture was lost.
+    g_dragKeyState=DragTestKeyDown;
+    QueueGesturePress(serial,2,{5,5}); BeginNativeGesture(owner);
+    CHECK_EQ(g_nativeGesture.source,2);
+    g_dragKeyState=DragTestKeyUp; PollNativeGesture(owner);
+    CHECK_EQ(g_pendingDrops.size(),1u);
+    g_dropTargetAt=+[](POINT){return 1;}; ProcessTrayDrops(); SettleWithExplorer();
+    CHECK(ForwardedToShell(L"drag.exe#7"));
+    // Device cancellation wins even if the pointer is still down.
+    QueueGesturePress(serial,1,{5,5}); BeginNativeGesture(owner);
+    g_cancelGestureSerial.store(serial); g_dragKeyState=DragTestKeyDown;
+    PollNativeGesture(owner);
+    CHECK(!g_nativeGesture.serial && g_pendingDrops.empty());
+    // A native drag still owning capture is retried, not deleted mid-loop.
+    g_pendingDrops.push_back({serial,1,{90,5},GetTickCount64()});
+    auto oldCapture=g_dragCapture;
+    g_dragCapture=+[]()->HWND {return reinterpret_cast<HWND>(1);};
+    ProcessTrayDrops(); CHECK_EQ(g_pendingDrops.size(),1u);
+    ControllerProc(owner,WM_ST_DROP_RETRY,0,0);
+    ControllerProc(owner,WM_TIMER,3,0);
+    CHECK(ForwardedToShell(L"drag.exe#7"));
+    g_dragCapture=+[]()->HWND {return nullptr;};
+    g_dropTargetAt=+[](POINT){return 2;}; ProcessTrayDrops();
+    CHECK_EQ(ShownTrayOf(L"drag.exe#7"),2);
+    g_dragCapture=oldCapture;
+    g_pendingDrops.push_back({serial,2,{90,5},GetTickCount64()-30001});
+    ProcessTrayDrops(); CHECK(g_pendingDrops.empty());
+    for (int i=0;i<20;++i) QueueTrayDrop(serial,2,{90,5});
+    CHECK_EQ(g_pendingDrops.size(),16u);
+    CancelNativeGesture(owner); CHECK(g_pendingDrops.empty());
+    g_dragKeyState=oldKey; g_dragCursor=oldCursor; g_nativeIconRect=oldRect; g_setDragCursor=oldSetCursor;
+    g_dropTargetAt=oldTarget; g_trayWnd.store(oldWorker); g_shellTrayWnd.store(oldShell);
+    DestroyWindow(owner);
+}
+
+
+int g_nativeOriginalPresses=0;
+void WINAPI TestOriginalNativePress(void* object,const void* args) {
+    CHECK(object==reinterpret_cast<void*>(1)); CHECK(args==reinterpret_cast<void*>(2));
+    ++g_nativeOriginalPresses;
+}
+void Test_NativePressHookAlwaysForwardsTheOriginal() {
+    auto original=SplitTrayXaml::g_NotifyIconPressed_Original;
+    auto keys=g_dragKeyState;
+    SplitTrayXaml::g_NotifyIconPressed_Original=TestOriginalNativePress;
+    g_dragKeyState=DragTestKeyUp; g_nativeOriginalPresses=0;
+    SplitTrayXaml::NotifyIconPressed_Hook(reinterpret_cast<void*>(1),reinterpret_cast<void*>(2));
+    CHECK_EQ(g_nativeOriginalPresses,1);
+    SplitTrayXaml::g_NotifyIconPressed_Original=original; g_dragKeyState=keys;
+}
+
+
+HCURSOR g_recordedFeedbackCursor=nullptr;
+HCURSOR WINAPI RecordFeedbackCursor(HCURSOR cursor) {g_recordedFeedbackCursor=cursor;return reinterpret_cast<HCURSOR>(9);}
+
+void Test_NativeFeedbackDoesNotDuplicateWindowsImage() {
+    auto original=std::exchange(g_setDragCursor,RecordFeedbackCursor);
+    UpdateDragFeedback(42,1,{100,100},GetCurrentThreadId());
+    CHECK_EQ(g_dragFeedbackSerial.load(),42u);
+    CHECK(g_dragVisual.window==nullptr);
+    CHECK(g_dragVisual.icon.get()==nullptr);
+    StopDragFeedback();
+    CHECK_EQ(g_dragFeedbackSerial.load(),0u);
+    g_setDragCursor=original; g_dragFeedbackThread.store(0);
+}
+
+void Test_DragFeedbackCursorIsScopedToAcceptedTargets() {
+    HCURSOR denied=LoadCursorW(nullptr,IDC_NO), arrow=LoadCursorW(nullptr,IDC_ARROW);
+    const DWORD thread=GetCurrentThreadId();
+    g_dragFeedbackSerial.store(42); g_dragFeedbackSource.store(2); g_dragFeedbackThread.store(thread);
+    g_dragFeedbackAllowed.store(true);
+    CHECK(DragFeedbackCursor(denied,thread)==arrow);
+    CHECK(DragFeedbackCursor(denied,thread+1)==denied);
+    g_dragFeedbackAllowed.store(false);
+    CHECK(DragFeedbackCursor(arrow,thread)==arrow);
+    g_dragFeedbackSource.store(1);
+    CHECK(DragFeedbackCursor(denied,thread)==denied);
+    CHECK(DragFeedbackCursor(nullptr,thread)==nullptr); // Native cursor is entirely Windows' own.
+    g_unloading.store(true);
+    CHECK(DragFeedbackCursor(arrow,thread)==arrow);
+    g_unloading.store(false);
+    g_dragFeedbackSerial.store(0);
+    CHECK(DragFeedbackCursor(denied,thread)==denied);
+    g_dragFeedbackThread.store(0); g_dragFeedbackSource.store(0); g_dragRequestedCursor.store(nullptr);
+}
+
+void Test_DragImageUsesTheRenderedTraySize() {
+    auto original=g_settings.iconSize; g_settings.iconSize=16;
+    CHECK_EQ(DragIconPixels(99,96),16);
+    CHECK_EQ(DragIconPixels(99,144),24);
+    g_dragIconSizeDips[99]=24;
+    CHECK_EQ(DragIconPixels(99,144),36);
+    g_dragIconSizeDips.erase(99); g_settings.iconSize=original;
+}
+
+void Test_DragImagePixelsAndPosition() {
+    IconPixels pixels{2,1,{10,20,30,128,40,50,60,255}};
+    const auto scaled=ScaleDragPixels(pixels,4);
+    CHECK_EQ(scaled.width,4); CHECK_EQ(scaled.height,4); CHECK_EQ(scaled.bgra.size(),64u);
+    CHECK_EQ(scaled.bgra[0],10); CHECK_EQ(scaled.bgra[3],128);
+    CHECK_EQ(scaled.bgra[12],40); CHECK_EQ(scaled.bgra[15],255);
+    CHECK_EQ(scaled.bgra[4],18); CHECK_EQ(scaled.bgra[7],160);
+    CHECK_EQ(scaled.bgra[51],128); CHECK_EQ(scaled.bgra[63],255);
+    CHECK(ScaleDragPixels(pixels,0).bgra.empty());
+    CHECK(ScaleDragPixels(pixels,257).bgra.empty());
+    pixels.bgra.clear(); CHECK(ScaleDragPixels(pixels,32).bgra.empty());
+    RECT monitor{-1920,-123,0,1080};
+    auto point=DragImagePosition({-10,1060},32,monitor,POINT{16,16});
+    CHECK_EQ(point.x,-32); CHECK_EQ(point.y,1044);
+    point=DragImagePosition({-1919,-122},32,monitor,POINT{16,16});
+    CHECK_EQ(point.x,-1920); CHECK_EQ(point.y,-123);
+    point=DragImagePosition({50,-200},32,monitor,POINT{16,16});
+    CHECK_EQ(point.x,-32); CHECK_EQ(point.y,-123);
+}
+
+void Test_DragHoverIsCoalescedAndUsesActualAcceptance() {
+    HWND window=MakeOwnerWindow();
+    HWND oldShell=g_shellTrayWnd.exchange(window);
+    const DWORD thread=GetCurrentThreadId();
+    auto target=std::exchange(g_dropTargetAt,+[](POINT p){return static_cast<int>(p.x);});
+    auto cursor=std::exchange(g_setDragCursor,RecordFeedbackCursor);
+    g_recordedFeedbackCursor=reinterpret_cast<HCURSOR>(17);
+    g_dragFeedbackSerial.store(42); g_dragFeedbackThread.store(thread); g_dragFeedbackSource.store(1);
+    { std::lock_guard<std::mutex> lock(g_dropMutex); g_dragHoverRequest={42,{2,5},GetTickCount64(),1,thread}; }
+    for (int i=0;i<100;++i) g_dragHoverWake.Post(window,GetDragHoverMessage());
+    MSG msg{}; int count=0;
+    while(PeekMessageW(&msg,window,GetDragHoverMessage(),GetDragHoverMessage(),PM_REMOVE)) ++count;
+    CHECK_EQ(count,1); g_dragHoverWake.Consume(window);
+    ProcessDragHover();
+    CHECK(g_dragFeedbackAllowed.load()); CHECK_EQ(g_dragFeedbackTarget.load(),2);
+    CHECK(g_recordedFeedbackCursor==reinterpret_cast<HCURSOR>(17));
+    { std::lock_guard<std::mutex> lock(g_dropMutex); g_dragHoverRequest.point={0,5}; }
+    ProcessDragHover(); CHECK(!g_dragFeedbackAllowed.load());
+    { std::lock_guard<std::mutex> lock(g_dropMutex); g_dragHoverRequest.point={1,5}; }
+    ProcessDragHover(); CHECK(!g_dragFeedbackAllowed.load()); // Windows owns native-primary feedback.
+    g_dragFeedbackSerial.store(43); ProcessDragHover(); // stale hover cannot change a new gesture
+    CHECK(!g_dragFeedbackAllowed.load());
+    StopDragFeedback(); CHECK_EQ(g_dragFeedbackSerial.load(),0u);
+    CHECK(g_recordedFeedbackCursor==reinterpret_cast<HCURSOR>(17));
+    CHECK(g_dragVisual.window==nullptr); ProcessDragHover();
+    CHECK(g_recordedFeedbackCursor==reinterpret_cast<HCURSOR>(17));
+    g_setDragCursor=cursor; g_dropTargetAt=target; g_shellTrayWnd.store(oldShell);
+    g_dragHoverWake.Reset(); g_dragFeedbackThread.store(0); DestroyWindow(window);
+}
+
+
+void Test_TrayDragAcceptanceRequiresAKnownSource() {
+    Settings settings=DefaultSettings(); settings.defaultTray=Destination::Secondary;
+    settings.extraTrays={{0,Corner::BottomLeft},{9,Corner::TopLeft}};
+    ResetStore(settings,true);
+    HWND owner=MakeOwnerWindow(); bool forward=true;
+    Feed(MakePayload(NIM_ADD,WireHandle(owner),7,NIF_MESSAGE|NIF_TIP,L"drag",L"C:\\test\\drag.exe"),&forward);
+    const uint64_t serial=g_icons.front().serial;
+    auto target=std::exchange(g_dropTargetAt,+[](POINT point){return static_cast<int>(point.x);});
+    g_dragFeedbackSerial.store(0); g_dragFeedbackSource.store(2);
+    CHECK_EQ(KnownTrayDragTargetAt({1,0}),0); // unrelated file/text data must remain untouched
+    g_dragFeedbackSerial.store(serial);
+    CHECK_EQ(KnownTrayDragTargetAt({1,0}),1);
+    CHECK_EQ(KnownTrayDragTargetAt({2,0}),2);
+    CHECK_EQ(KnownTrayDragTargetAt({3,0}),3);
+    CHECK_EQ(KnownTrayDragTargetAt({4,0}),0);
+    CHECK_EQ(KnownTrayDragTargetAt({0,0}),0);
+    g_dragFeedbackSource.store(3); CHECK_EQ(KnownTrayDragTargetAt({1,0}),0);
+    g_dragFeedbackSource.store(2); g_dragFeedbackSerial.store(serial+1000);
+    CHECK_EQ(KnownTrayDragTargetAt({1,0}),0);
+    g_dragFeedbackSerial.store(serial); g_unloading.store(true);
+    CHECK_EQ(KnownTrayDragTargetAt({1,0}),0); g_unloading.store(false);
+    MoveIconToTray(L"drag.exe#7",Destination::Primary); SettleWithExplorer();
+    g_dragFeedbackSource.store(1);
+    CHECK_EQ(KnownTrayDragTargetAt({1,0}),0); // native-primary reorder/pinning stays native
+    CHECK_EQ(KnownTrayDragTargetAt({2,0}),2);
+    g_dragFeedbackSerial.store(0); g_dragFeedbackSource.store(0); g_dropTargetAt=target;
+    DestroyWindow(owner);
+}
+
+void Test_GhostIconBlendsAtFortyPercentWithoutChangingItsSource() {
+    BITMAPINFO info{}; info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER); info.bmiHeader.biWidth=1; info.bmiHeader.biHeight=-1;
+    info.bmiHeader.biPlanes=1; info.bmiHeader.biBitCount=32; info.bmiHeader.biCompression=BI_RGB;
+    DWORD *sourceBits=nullptr,*targetBits=nullptr;
+    HBITMAP source=CreateDIBSection(nullptr,&info,DIB_RGB_COLORS,reinterpret_cast<void**>(&sourceBits),nullptr,0);
+    HBITMAP target=CreateDIBSection(nullptr,&info,DIB_RGB_COLORS,reinterpret_cast<void**>(&targetBits),nullptr,0);
+    CHECK(source && target);
+    if (!source || !target) {if(source)DeleteObject(source);if(target)DeleteObject(target);return;}
+    *sourceBits=0xFFFF0000; *targetBits=0xFF000000;
+    BYTE maskBits[4]{}; HBITMAP mask=CreateBitmap(1,1,1,1,maskBits);
+    ICONINFO iconInfo{}; iconInfo.fIcon=TRUE; iconInfo.hbmColor=source; iconInfo.hbmMask=mask;
+    HICON icon=CreateIconIndirect(&iconInfo); CHECK(icon!=nullptr);
+    HDC dc=CreateCompatibleDC(nullptr); const auto previous=SelectObject(dc,target);
+    CHECK(DrawGhostIcon(dc,0,0,icon,1)); GdiFlush();
+    CHECK_EQ(GetRValue(GetPixel(dc,0,0)),102); CHECK_EQ(GetGValue(GetPixel(dc,0,0)),0);
+    CHECK_EQ(*sourceBits,0xFFFF0000u);
+    CHECK(!DrawGhostIcon(dc,0,0,nullptr,1));
+    SelectObject(dc,previous); DeleteDC(dc); DestroyIcon(icon); DeleteObject(mask); DeleteObject(source); DeleteObject(target);
+}
+
+void Test_FloatingInsertionLineUsesTheActualDropCell() {
+    TrayLayout layout{}; layout.cell=28; layout.columns=3; layout.width=84; layout.height=56;
+    auto before=InsertionLineRect(layout,3,5,false,96);
+    CHECK_EQ(before.left,0); CHECK_EQ(before.right,1); CHECK_EQ(before.top,32); CHECK_EQ(before.bottom,52);
+    auto after=InsertionLineRect(layout,2,5,true,96);
+    CHECK_EQ(after.left,83); CHECK_EQ(after.right,84); CHECK_EQ(after.top,4);
+    layout.cell=56; layout.width=168; layout.height=112;
+    auto scaled=InsertionLineRect(layout,4,5,true,192);
+    CHECK_EQ(scaled.left,110); CHECK_EQ(scaled.right,112); CHECK_EQ(scaled.top,64); CHECK_EQ(scaled.bottom,104);
+    auto invalid=InsertionLineRect(layout,5,5,true,96); CHECK(IsRectEmpty(&invalid));
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     printf("split-tray regression tests\n\n");
 
     TestRunner runner;
+    runner.Run("ghost icon blends at forty percent without changing source",Test_GhostIconBlendsAtFortyPercentWithoutChangingItsSource);
+    runner.Run("floating insertion line uses actual drop cell",Test_FloatingInsertionLineUsesTheActualDropCell);
+    runner.Run("XAML drag acceptance requires a known tray source",Test_TrayDragAcceptanceRequiresAKnownSource);
+    runner.Run("drag image matches rendered tray size",Test_DragImageUsesTheRenderedTraySize);
+    runner.Run("native feedback keeps Windows image",Test_NativeFeedbackDoesNotDuplicateWindowsImage);
+    runner.Run("drag feedback cursor is scoped to accepted targets",Test_DragFeedbackCursorIsScopedToAcceptedTargets);
+    runner.Run("drag image pixels and positioning",Test_DragImagePixelsAndPosition);
+    runner.Run("drag hover is coalesced and uses acceptance",Test_DragHoverIsCoalescedAndUsesActualAcceptance);
+    runner.Run("native press hook forwards original",Test_NativePressHookAlwaysForwardsTheOriginal);
+    runner.Run("native gesture worker lifecycle",Test_NativeGestureLifecycleQueuesOnlyAValidRelease);
+    runner.Run("tray gesture cancellation and both axes",Test_TrayGesturesCancelAndRecognizeBothAxes);
+    runner.Run("forged drop wake supplies no transfer",Test_ForgedDropWakeCannotSupplyATransfer);
+    runner.Run("tray drops validate source and destination",Test_TrayDropsValidateSourceAndDestination);
+    runner.Run("native icon hit testing rejects ambiguity",Test_PrimaryIconHitTestingRejectsAmbiguity);
+    runner.Run("order snapshots stay consistent during edits",Test_OrderSnapshotsStayConsistentDuringEdits);
+    runner.Run("reorder preserves absent icons",Test_ReorderPreservesAbsentIcons);
+    runner.Run("arrange order and search",Test_ArrangeOrderAndSearch);
+    runner.Run("floating trays use order and overflow", Test_FloatingTraysUseRememberedOrderAndOverflow);
+    runner.Run("cached displays still resize floating trays", Test_CachedDisplaysStillResizeFloatingTrays);
+    runner.Run("icon bursts queue one worker refresh", Test_IconBurstsQueueOneWorkerRefresh);
+    runner.Run("a replaced window keeps its refresh", Test_RefreshForAReplacedWindowIsNotLost);
+    runner.Run("icon refresh does not enumerate displays", Test_IconRefreshDoesNotEnumerateDisplays);
+
 
     printf("wire protocol (against real shell32 captures)\n");
     runner.Run("parses the real Unicode v4 payload", Test_ParsesRealUnicodeV4Payload);

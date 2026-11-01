@@ -63,6 +63,16 @@ With two displays there is one extra tray, tray 2, on the second display.
 
 ### Moving icons
 
+* **Drag an application icon onto another tray** to move it there. Drop onto
+  the primary notification area to return it to Windows. A desktop drop leaves
+  placement unchanged; Escape cancels. Embedded overflow icons can be moved too.
+  Windows still controls reordering and pinning inside its own primary tray.
+  Floating panels support dragging between trays and reordering their visible icons.
+  A vertical insertion line shows the reorder position in embedded and floating trays.
+  The original icon stays as a dimmed ghost until release; only then does the order change.
+  The dragged icon follows the pointer; receiving trays show an allowed arrow
+  instead of Windows' denied-drop cursor.
+
 * **Shift+right-click** an icon in one of Split Tray's trays to open the Split
   Tray menu. From there you can send the icon to any other tray, hide it behind
   the chevron, or pull icons into this tray from elsewhere. Plain right-click
@@ -71,11 +81,20 @@ With two displays there is one extra tray, tray 2, on the second display.
 * **Arrange icons…** (in the menu) opens a window with one list per tray. Drag
   an icon between the lists, or select one and press the number of the tray it
   should go to. **H** hides it behind its tray's chevron or brings it back.
+  **Ctrl+Up/Down** or **Move up/down** changes its order; clear the search first.
+  **Ctrl+R** or **Follow rules** removes just that icon's manual placement.
+  Search by icon or executable name. The window resizes and scrolls for more trays.
 
 <p>
   <img src="docs/images/menu.png" width="400" alt="The Split Tray menu, opened with Shift+right-click on an icon in tray 2">
   <img src="docs/images/arrange.png" width="400" alt="The arrange window, with one list for the primary tray and one for tray 2">
 </p>
+
+**Ctrl+Alt+T** opens Arrange from anywhere. **Ctrl+Alt+Shift+T** cycles
+floating trays. On an embedded icon, **Ctrl+Shift+F10** opens Split Tray's menu;
+Shift+F10 continues to open the application's menu. The chevron and empty
+handle are buttons reachable by keyboard and screen readers. Shortcut conflicts
+are reported in the mod log.
 
 Every move is remembered, including across restarts, and it outranks the rules.
 **Reset moved icons** in the menu hands every icon back to the rules. An icon
@@ -87,7 +106,11 @@ keeps its hidden icons:
 
 ![Tray 2's chevron open, showing the icon hidden behind it](docs/images/overflow.png)
 
-An empty tray shows a small handle. Click it for the menu.
+Floating trays honor the same order and hidden choices. Their hidden-icon menu
+offers Open, Application menu, and Show on the tray for each icon.
+
+An empty tray shows a small handle. Click it for the menu. Arrange's **Tray status**
+explains which trays are available, embedded, or floating.
 
 ### Settings
 
@@ -100,7 +123,7 @@ Set in Windhawk's settings tab for the mod.
 | Default tray | Tray 1 | Where an icon goes when no rule matches it. |
 | Per-application rules | none | Executable name (or a path fragment, if it contains a `\`) and the tray its icon goes to. First match wins. The lists go up to tray 10; an icon goes to a tray past that by being moved there. |
 | Extra trays | none | Floating trays on any display: `primary`, or a display number counted from the left, and a corner. **Disabled** hides a tray but keeps its entry and its number. |
-| Icons before the overflow chevron | 8 | How many icons a tray in a taskbar shows before the rest go behind the chevron. 0 shows all. |
+| Icons before the overflow chevron | 8 | How many icons a tray in a taskbar shows before the rest go behind the chevron. 0 removes the count limit; a spatial width budget still protects the taskbar. |
 | Embed in each display's taskbar | on | Off draws every tray as a floating panel instead. |
 | Floating position, offsets, icon and cell size, colour, opacity, keep on top | | How floating trays look. |
 | Show icons the application marked as hidden | on | Off respects `NIS_HIDDEN` in Split Tray's trays too. |
@@ -120,16 +143,33 @@ shows it in tray 2 as well.
   time it has a balloon to show, and the copy goes when the icon does. Moving
   such an icon into the main tray takes the notifications it showed out of the
   notification center: measured, Explorer drops them when it shows the copy.
-* A floating tray has the keyboard when an application gives the focus back to
-  its icon, or a screen reader moves to it. No key of its own reaches one.
 * More displays connected at once than ever before move the extra trays'
   numbers up by one, to make room for the new display's tray.
-* Icons cannot be dragged around on the taskbar itself yet: pointer capture
-  inside Explorer's XAML does not hold for a drag. Moving happens in the menu
-  and the arrange window instead.
+* Cross-tray mouse transfers have a fallback when Explorer takes XAML capture.
+  In-row reordering in embedded trays still depends on capture; Arrange offers
+  explicit order controls. Native source identification requires a unique known
+  application icon, so ambiguous/unknown icons and Windows system buttons are
+  left to Windows. This integration uses one additional private Windows symbol.
 * Embedding relies on symbols in Explorer's own DLLs. A Windows update that
   moves them turns the trays into floating panels until the mod is updated.
   Turning embedding off does the same on purpose.
+
+## Backing up settings and placement
+
+From this checkout, `tools/configuration.ps1` backs up settings, placements,
+hidden choices, order, and remembered display slots. It can show a file picker:
+
+```powershell
+powershell.exe -NoProfile -File tools/configuration.ps1 -Action Export -Interactive
+powershell.exe -NoProfile -File tools/configuration.ps1 -Action Import -Interactive
+```
+
+Disable the target mod before importing, use an administrator shell for the
+installed Windhawk registry, then enable it again. Use `-ModId split-tray` for
+the catalog copy; the default is `local@split-tray`. `-Path backup.json` replaces
+the picker. Import validates the entire file before writing, saves a recovery
+backup beside it, and rolls values back on a write failure. This tool requires
+the checkout; it is not bundled into Windhawk's single-file mod.
 
 ## How it works
 

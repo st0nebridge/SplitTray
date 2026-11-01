@@ -1,5 +1,34 @@
 # Change Log
 
+## 2026-10-09 - Split Tray 1.3.3 published, and the catalog pull request updated
+
+**Impact:** none. A record of the release, asked for by the user: "make sure
+you push to git too".
+
+* **Public commit:** `cbe4f1a` "Split Tray 1.3.3: unloads cleanly, loads its
+  symbols once, embeds on ARM64", on `main`, on top of 1.3.2 (`0c0e354`).
+* **Built from:** development commit `3d1aa74`, minus the paths
+  `.release-scan` names, with globbing off. 47 files: those of 1.3.2, plus
+  `tools/mutants_catalog.py`.
+  * The first build, from `0698d6c`, failed the release scan on a process
+    acronym in this file's 1.3.3 entry. The entry was reworded (`3d1aa74`)
+    and the commit and tag made again; nothing had been pushed.
+* **Tag:** `v1.3.3`, annotated.
+* **GitHub release** "Split Tray 1.3.3", latest. Its assets are
+  `split-tray.wh.cpp` (the tag's own blob, `70995cf`) and `SHA256SUMS`,
+  downloaded back and checked against their digests.
+* **Release scan:** exit 0 on the tree, the commit, the tag, the assets and
+  the notes.
+* **Verified from a `git archive` export:** its own `tools/build.ps1` passed:
+  1154 regression checks at -O0 and -O2, 416 integration, 345 XAML, the DLL.
+* **The catalog pull request** (ramensoftware/windhawk-mods#6050):
+  * `e514628` carried the three fixes; the second AI review found nothing
+    blocking.
+  * `0fcc01e` carries the comments trimmed after it, the same blob as the
+    release. A third AI review was asked for, as the flow needs one of the
+    head commit before a human reviewer is.
+  * The description now names release 1.3.3.
+
 ## 2026-10-09 - Split Tray 1.3.3: the catalog's AI review
 
 **Impact:** fix. Unloading, symbol resolution and the tray thread's timer
@@ -3443,3 +3472,324 @@ off every screen.
   `build/dbgcapture.exe` are in place for it.
 * Balloon notifications, UI Automation exposure of the secondary tray, and
   overflow/chevron behaviour are out of scope for 1.0.0 (see `README.md`).
+
+
+## 2026-11-01 - Bound refresh work during tray-icon bursts
+
+id: CU-20261101-001
+type: fix
+impact: medium
+affected_modules: src/split-tray.wh.cpp
+related_tests: Test_IconBurstsQueueOneWorkerRefresh; Test_RefreshForAReplacedWindowIsNotLost; Test_IconRefreshDoesNotEnumerateDisplays; Test_EmbeddedRefreshBurstsAreCoalesced; Test_CachedDisplaysStillResizeFloatingTrays
+
+Icon notifications now schedule one pending latest-state refresh per target
+window. Embedded XAML refreshes are deferred until after the notification
+returns, and icon-only worker refreshes reuse the maintained display geometry.
+A recreated target can schedule immediately; failed posts release the pending
+wake. Clear the wake before processing so changes during rendering are not lost.
+This addresses redundant work and queue growth, not a proven cause of the
+reported Explorer hang. No changes to shell replay or unload lifetime rules.
+
+author: Brandon Stonebridge
+timestamp: 2026-11-01T04:34:00Z
+commit_ref: this commit on codex/coalesce-tray-refreshes
+
+Verification: tools/build.ps1 passed (1162 regression checks at both -O0 and
+-O2, 416 integration checks, 349 hosted-XAML checks, all zero failures).
+Before the fix the burst regression observed 1000 queued worker refreshes;
+after it, one. tools/coverage.ps1 passed: regions 85.83%, branches 75.69%,
+functions 90.69%, lines 86.53% (previous baseline: 85.99/75.85/90.62/86.62%).
+The structure scanner scored 87.5/100 but inspected tooling, not the C++ mod;
+its testability check failed, so this is not a claim of full structure compliance.
+
+Live verification: the catalog mod is disabled and only the tested
+local@split-tray DLL is loaded. Windhawk switched live without restarting
+Explorer (PID 11016 retained). DLL SHA-256:
+568DF28A1D36D2CDDBF4321063BF35008567D2E09025F7DFB6E5D990135AAB80.
+Settings matched the catalog copy; remembered state was copied before enabling
+dev. The log recorded tray 2 attaching and rebuilding with seven icons.
+Explorer responded throughout a subsequent ten-second sample (62 ms CPU).
+This sample is an observation, not a controlled performance comparison.
+
+## 2026-11-01 - Complete tray controls and overflow updates
+
+id: CU-20261101-002
+type: feature
+impact: medium
+affected_modules: src/split-tray.wh.cpp
+related_tests: Test_TrayControlsAreInvokableButtons; Test_OpenOverflowUpdatesItsExistingCells
+
+Focusable, named buttons inside the embedded chevron and empty handle expose
+Invoke to keyboard and automation. Ctrl+Shift+F10 opens Split Tray's menu on
+a cell. Ctrl+Alt+T opens Arrange; Ctrl+Alt+Shift+T cycles floating trays.
+Open overflow cells update their pictures/names/tooltips without replacement.
+Hover/pressed colors respect system contrast; overflow inherits text direction.
+Verification: covered by the final integrated verification recorded below.
+
+## 2026-11-01 - Share tray order and hidden choices
+
+id: CU-20261101-003
+type: feature
+impact: medium
+affected_modules: src/split-tray.wh.cpp
+related_tests: Test_FloatingTraysUseRememberedOrderAndOverflow
+
+Both renderers share synchronized presentation order. Floating panels honor
+hidden choices and the visible count, exposing hidden icons through their menu.
+Both icon menus can return one icon to routing rules independently.
+Verification: covered by the final integrated verification recorded below.
+
+## 2026-11-01 - Make Arrange an order editor and searchable manager
+
+id: CU-20261101-004
+type: feature
+impact: medium
+affected_modules: src/split-tray.wh.cpp
+related_tests: Test_ArrangeOrderAndSearch; Test_ReorderPreservesAbsentIcons
+
+Arrange provides Move up/down (Ctrl+Up/Down), per-icon Follow rules (Ctrl+R),
+search by name/key, and tray status explaining floating fallback. Ordering is
+disabled while searching to avoid moving past invisible neighbors. The
+resizable window is clamped to its display and wraps lists into a scrolling grid.
+Verification: covered by the final integrated verification recorded below.
+
+## 2026-11-01 - Finish overflow input, layout and recovery tooling
+
+id: CU-20261101-005
+type: feature
+impact: medium
+affected_modules: src/split-tray.wh.cpp; tools/configuration.ps1; tools/performance.ps1
+related_tests: Test_OverflowReusesPicturesAndInheritsDirection; Test_ATouchHoldIsAMenuWithoutATap; Test_PointerCoordinatesReachTheApplication; Test_TrayWidthProtectsTaskbarSpace; tests/regression/test_configuration.py; tests/performance/tray_stress.cpp
+
+Reuse hidden icon pictures between refreshes, update open popup cells in place,
+return focus to the chevron for hidden icons, and inherit direction/theme.
+Touch/pen release uses native pointer coordinates; holding opens the application
+menu without an accompanying tap. Embedded rows have a spatial width budget.
+Configuration export/import includes settings and all remembered state with
+validation, an optional file picker, a recovery backup, and rollback.
+A self-ending hosted stress probe measures refresh duration, pending wake count
+and GDI/USER/kernel handle growth. Version 1.4.0 development build.
+Verification: covered by the final integrated verification recorded below.
+
+## 2026-11-01 - Freeze ordering snapshots across each sort
+
+id: CU-20261101-006
+type: fix
+impact: medium
+affected_modules: src/split-tray.wh.cpp
+related_tests: Test_OrderSnapshotsStayConsistentDuringEdits
+
+Each renderer/manager/rectangle lookup sorts against one immutable order
+snapshot. A concurrent reorder can no longer change a comparator's ordering
+mid-sort. DPI changes refresh Arrange's fonts and image lists.
+Verification: covered by the final integrated verification recorded below.
+
+## 2026-11-01 - Verify and deploy the completed interface pass
+
+id: CU-20261101-007
+type: doc
+impact: none
+affected_modules: docs/interface-completion.md; UNFINISHED.md
+related_tests: tools/build.ps1; tools/coverage.ps1; tests/regression/test_configuration.py; tests/performance/tray_stress.cpp
+author: Brandon Stonebridge
+timestamp: 2026-11-01T06:12:55+00:00
+commit_ref: this commit on codex/complete-tray-interface
+
+Full build passed at -O0 and -O2 (1,380 checks each). The expanded final suites
+passed: 1,380 regression, 440 integration and 377 hosted-XAML checks, plus four
+isolated configuration tests. Native coverage: regions 85.41%, branches 74.26%,
+functions 90.50%, lines 86.61%. structure tooling score 89.4/100 does not measure C++
+and its testability check failed; no full structure compliance or mutation score claimed.
+
+Three alternating stress comparisons (4,800 updates each, 24 icons, open
+overflow) measured p95 4.759-5.811 ms on baseline 5d6336a and 0.430-0.543 ms
+currently. Every batch queued one refresh; handle growth stayed within budget.
+See docs/interface-completion.md for exact results, budgets and limits.
+
+Installed dev DLL local@split-tray_1.4.0_197991.dll; catalog disabled. Hash:
+07072B4A763309FDB7FABEC17384377B10D8BDD0D2245EB89CE490B92379520F.
+Explorer retained PID 11016; all 25 existing settings/state
+values matched the pre-switch backup. Live log confirmed seven icons in tray 2.
+The stray dot persisted unloaded and later cleared before this build's install;
+no causal attribution or pixel workaround. Physical/platform verification limits,
+the original unproven freeze cause and native dragging limits are in UNFINISHED.md.
+
+## 2026-11-01 - Route direct icon drags between actual tray targets
+
+id: CU-20261101-008
+type: feature
+impact: medium
+affected_modules: src/split-tray.wh.cpp; tools/check-symbols.py
+related_tests: Test_AVerticalGestureStartsDraggingWithoutActivatingTheIcon; Test_TrayGesturesCancelAndRecognizeBothAxes; Test_TrayDropsValidateSourceAndDestination; Test_PrimaryIconHitTestingRejectsAmbiguity
+
+Use a two-axis threshold and real drop targets. Floating panels capture a left
+press and defer application callbacks until release distinguishes click/drag.
+Observe native NotifyIconView presses, identify only a unique tracked shell icon,
+and poll only during that press. Native reorder and overflow handling stay with
+Windows; valid cross-tray drops use the existing routing/replay path after input.
+Cancellation, unload, missing icons and unavailable destinations do not move an
+icon. The registered drop message carries no pointers or trusted input fields.
+Verification pending below; vertical regression first reproduced four failures.
+
+The press-scoped observer also covers embedded/overflow mouse sources, so a
+refused or stolen XAML capture no longer prevents a cross-tray transfer.
+Pointer cancellation cancels its observer; suppressed local releases never
+activate an application. In-row reordering still uses XAML capture.
+
+Ordinary clicks remain valid when capture is refused, and right/middle presses
+retain their prior popup-close behavior without entering drag state. Anchors:
+Test_AFallbackPressStillClicksWhenItDoesNotMove;
+Test_OtherButtonPressClosesPendingPopupWithoutStartingADrag.
+
+Final verification: tools/build.ps1 and final DLL rebuild passed; 1,448
+regression checks at -O0/-O2, 455 integration checks, 403 hosted-XAML checks.
+Coverage regions/branches/functions/lines: 85.63/74.05/90.61/86.77%, all gates
+met. Three stress runs passed with p95 0.444/0.475/0.684 ms and bounded handles.
+Installed local@split-tray_1.4.1_816231.dll without restarting Explorer (PID 11016).
+All 21 settings retained; live movement/order changes audited against logs.
+Two production primary/secondary round trips were observed. See
+docs/direct-dragging.md for exact evidence and visual/platform limits.
+author: Brandon Stonebridge
+timestamp: 2026-11-01T06:54:56.260325+00:00
+commit_ref: this commit on codex/cross-tray-dragging
+
+## 2026-11-01 - Carry the icon and show accepted cross-tray drops
+
+id: CU-20261101-009
+type: feature
+impact: medium
+affected_modules: src/split-tray.wh.cpp
+related_tests: Test_DragFeedbackCursorIsScopedToAcceptedTargets; Test_DragImagePixelsAndPosition; tests/integration/mod_integration_test.cpp [6-order]
+
+Requested after the user confirmed both transfer directions work. A transparent,
+non-activating per-drag layered image carries the actual icon between trays.
+Coalesced taskbar-thread hit tests publish acceptance; a public SetCursor hook
+overrides native denied feedback only for the active gesture's input thread.
+Windows retains primary drag behavior, and final routing validation is unchanged.
+Shared mask/alpha-aware pixel extraction serves XAML and the drag image.
+Verification pending below; the missing-image private-desktop regression is red first.
+
+Brandon clarified the existing outbound Windows image already works; the missing
+image is on return. Keep that native image intact and create a custom image only
+for Split Tray-owned sources. Anchor: Test_NativeFeedbackDoesNotDuplicateWindowsImage.
+
+## 2026-11-01 - Match return-image sizing and trace the common cursor setter
+
+id: CU-20261101-010
+type: fix
+impact: medium
+affected_modules: src/split-tray.wh.cpp
+related_tests: Test_DragImageUsesTheRenderedTraySize; Test_DragImagePixelsAndPosition; Test_DragFeedbackCursorIsScopedToAcceptedTargets
+
+Brandon confirmed the return image works in 1.4.2 but is too large/differently
+styled, and denied feedback remains in both directions. Use the actual embedded
+or floating icon size, smooth premultiplied scaling, full source opacity and a
+centered hotspot. user32 SetCursor was verified as an argument-preserving jump
+to win32u NtUserSetCursor on this host; hook that common setter, retaining the
+active-input-thread guard. Bounded per-gesture call/override/thread diagnostics
+identify the real live cursor path instead of inferring success from acceptance.
+
+## 2026-11-01 - Accept known tray drags at the XAML feedback layer
+
+id: CU-20261101-011
+type: fix
+impact: medium
+affected_modules: src/split-tray.wh.cpp
+related_tests: Test_TrayDragAcceptanceRequiresAKnownSource; Test_XamlDropRootsRestoreTheirOriginalState
+
+Live 1.4.3 diagnostics captured the real cursor as the stock arrow while the
+denied sign remained visible; 254 native setter calls required zero overrides.
+The sign is drag UI feedback, not the Win32 cursor. Remove the ineffective
+process-wide cursor hooks. Known tray drags over actual valid trays accept Move
+and hide the XAML drag glyph/caption. Ordinary external data drags remain with
+Windows. Root handlers are retained explicitly, detached and AllowDrop restored
+on the XAML thread at unload. Existing primary roots are also seen on press.
+
+## 2026-11-01 - Correct the native manual tray drag visual
+
+id: CU-20261101-012
+type: fix
+impact: medium
+affected_modules: src/split-tray.wh.cpp; tools/check-symbols.py
+related_tests: Test_NativeDragVisualChangesOnlyForKnownSecondaryTargets; Test_TrayDragAcceptanceRequiresAKnownSource; Test_DragFeedbackCursorIsScopedToAcceptedTargets
+
+Replace CU-011's uninstalled generic drag-event prototype after inspection of
+this host's SystemTray binary proved it uses a manual DragDropManager. Capture
+the projected native drag Control through BeginDrag, and after native DragMove
+restore its Normal presentation only for a known native icon over a valid
+secondary tray. Do not change native hit tests or drop state. Retain no strong
+control reference, clear it at unload, and remove all generic AllowDrop changes.
+Owned return drags use an arrow even between targets, avoiding our own denied
+cursor competing with valid feedback. Native primary reorder stays with Windows.
+
+CU-20261101-012 verification: 1.4.4 built and installed without restarting Explorer; Brandon confirmed denied feedback gone in both directions. Final XAML421, regression1504 at O0/O2, integration487, coverage85.49/74.12/89.89/86.94%; one 4800-notification stress run passed with p95 0.477ms. See docs/direct-dragging.md for evidence and limits.
+
+## 2026-11-01 - Show the native-style reorder insertion line
+
+id: CU-20261101-013
+type: feature
+impact: medium
+affected_modules: src/split-tray.wh.cpp
+related_tests: Test_InsertionLineTracksReorderWithoutChangingCells; Test_FloatingInsertionLineUsesTheActualDropCell; tests/integration/mod_integration_test.cpp [6-order]
+
+Show a narrow vertical line at the reorder destination, requested to match the
+primary tray. Embedded rows use a noninteractive composition child visual;
+cell children, spacing and pointer capture remain unchanged. Floating trays
+paint the equivalent DPI-scaled line at the actual destination cell's edge.
+Hide on leaving the source row and clear on release, capture loss, cancellation,
+new presses, panel removal and unload. Use theme/high-contrast-aware colour.
+
+CU-20261101-013 lifecycle review: reuse the existing coalesced gesture wake to remove the embedded marker on observed release, Escape or the 30-second gesture bound even if XAML capture events are delayed. A cancelled preview cannot reappear until another press. The resource regression retains twelve cancellations and the original limits, with queued refresh/paint completion before counts (observed GDI 15 to 16, USER 17 to 17).
+
+## 2026-11-01 - Leave the native-style source ghost until release
+
+id: CU-20261101-014
+type: feature
+impact: medium
+affected_modules: src/split-tray.wh.cpp
+related_tests: Test_GhostIconBlendsAtFortyPercentWithoutChangingItsSource; Test_DraggingAlongTheRowReordersItAndIsNotAClick; Test_ADragCutShortKeepsItsOrderAndIsNotAClick; Test_ACancelledGhostCannotTransferWhenEscapeHasBeenReleased; tests/integration/mod_integration_test.cpp [6-order]
+
+Keep a 40%-opacity source in its original slot while the moving image and
+insertion line preview the destination. Embedded order now commits on release;
+capture loss/cancellation preserves the original order. The shared observer
+also fades sources whose XAML capture was refused, including overflow cells,
+and clears the ghost on release, Escape, timeout, panel removal and unload.
+Floating panels blend the source icon's premultiplied pixels at the same opacity
+and retain their existing release-only ordering. The moving image stays full
+opacity and the primary tray remains Windows-owned.
+
+CU-20261101-014 cancellation regression: Test_ACancelledGhostCannotTransferWhenEscapeHasBeenReleased first reproduced a transfer after Escape was released before mouse-up. Retain the observed cancellation flag in final direct-drop validation as well as reorder validation. Resource snapshots execute on the private tray thread; observed raw GDI17 versus quiescent15 equals the baseline15, with USER18 unchanged.
+
+CU-20261101-013/014 final verification: Brandon confirmed both requested native
+visual behaviors on the live dev mod (1.4.5 line, 1.4.6 ghost/release-only order).
+Final suites: 1523 regression (O0/O2), 504 integration, 461 XAML. Build OK;
+coverage85.29/73.49/90.02/87.11% passes all configured gates. Storm probe4800
+notifications/240 refreshes p95 0.427ms max0.662ms, bounded handles. Installed
+1.4.6 without restarting Explorer; all25 settings/state entries preserved.
+See docs/direct-dragging.md for commands, exact DLL hash, evidence and limits.
+
+
+## 2026-11-01 - Validate the release and keep elevated redeploy values as data
+
+id: CU-20261101-015
+type: fix
+title: Prevent redeploy settings from becoming administrator script code
+impact: medium
+affected_modules: tools/redeploy.ps1; tools/build.ps1; tests/regression/test_redeploy.py
+related_tests: RedeployTests.test_quoted_settings_are_never_executed; RedeployTests.test_checkout_paths_with_quotes_and_spaces_stay_data; Test_ForgedDropWakeCannotSupplyATransfer
+author: Brandon Stonebridge
+timestamp: 2026-11-01T10:00:00Z
+commit_ref: this commit
+
+The redeploy helper's unescaped generated literals executed an adversarial setting
+expression in an isolated probe. Settings now cross elevation as JSON and paths as
+parameters; generated installer code is constant. Child failures stop the helper
+before Explorer restart. The build runs the new isolated security gate. No live
+registry writes or elevated exploit were used for reproduction. The taskbar drop
+wake is also tested to ignore forged message arguments. Runtime mod behavior and
+version remain 1.4.6. Public documentation uses plain structure-check wording;
+stable change identifiers remain published under the recorded release policy.
+
+The full internal security review is docs/security-review-2026-11-01.md, excluded
+from the public release. Its verified finding is fixed; remaining platform and
+original freeze/dot uncertainties are explicitly retained.

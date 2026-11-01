@@ -42,6 +42,15 @@ MOD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 # symbols did, until an external review noticed.
 REQUIRED = {
     os.path.join(CLIENT_CORE, "SystemTray.dll"): [
+        ('?BeginDrag@DragDropManager@implementation@SystemTray@winrt@@QEAAXAEBUNotifyIconView@234@UNotifyIconDragVisual@34@@Z',
+         'public: void __cdecl winrt::SystemTray::implementation::DragDropManager::BeginDrag(struct winrt::SystemTray::implementation::NotifyIconView const &,struct winrt::SystemTray::NotifyIconDragVisual)',
+         "corrects only native drag presentation over verified SplitTray targets"),
+        ('?DragMove@DragDropManager@implementation@SystemTray@winrt@@QEAAXAEBUNotifyIconView@234@AEBUPointerRoutedEventArgs@Input@Xaml@UI@Windows@4@@Z',
+         'public: void __cdecl winrt::SystemTray::implementation::DragDropManager::DragMove(struct winrt::SystemTray::implementation::NotifyIconView const &,struct winrt::Windows::UI::Xaml::Input::PointerRoutedEventArgs const &)',
+         "corrects only native drag presentation over verified SplitTray targets"),
+        ("?OnPointerPressed@NotifyIconView@implementation@SystemTray@winrt@@EEAAXAEBUPointerRoutedEventArgs@Input@Xaml@UI@Windows@4@@Z",
+         "private: virtual void __cdecl winrt::SystemTray::implementation::NotifyIconView::OnPointerPressed(struct winrt::Windows::UI::Xaml::Input::PointerRoutedEventArgs const &)",
+         "observes a native application-icon press without replacing Windows drag handling"),
         ("??0IconView@implementation@SystemTray@winrt@@QEAA@XZ",
          "public: __cdecl winrt::SystemTray::implementation::IconView::IconView(void)",
          "every tray icon view passes through this constructor - the anchor "

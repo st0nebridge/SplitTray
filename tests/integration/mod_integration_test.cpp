@@ -61,6 +61,30 @@ void Check(bool condition, const char* expression, int line) {
         }                                                                   \
     } while (0)
 
+// Count on the tray's own thread: main-thread samples can catch temporary
+// paint icons/DCs in another panel even after UpdateWindow for this panel.
+struct GuiResourceSnapshot { DWORD gdi,user; };
+std::atomic<DWORD> g_snapshotGdi{0},g_snapshotUser{0};
+constexpr WPARAM kResourceSnapshot=0x53545259;
+LRESULT CALLBACK ResourceSnapshotHook(int code,WPARAM w,LPARAM l) {
+    if (code>=0) {
+        auto message=reinterpret_cast<CWPSTRUCT const*>(l);
+        if (message->message==WM_NULL && message->wParam==kResourceSnapshot) {
+            GdiFlush();
+            g_snapshotGdi.store(GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS));
+            g_snapshotUser.store(GetGuiResources(GetCurrentProcess(),GR_USEROBJECTS));
+        }
+    }
+    return CallNextHookEx(nullptr,code,w,l);
+}
+GuiResourceSnapshot SnapshotGuiResources(HWND tray) {
+    const auto hook=SetWindowsHookExW(WH_CALLWNDPROC,ResourceSnapshotHook,nullptr,GetWindowThreadProcessId(tray,nullptr));
+    CHECK(hook!=nullptr);
+    SendMessageW(tray,WM_NULL,kResourceSnapshot,0);
+    if (hook) UnhookWindowsHookEx(hook);
+    return {g_snapshotGdi.load(),g_snapshotUser.load()};
+}
+
 // --- The stand-in for Explorer ---------------------------------------------
 
 // What the "shell" actually received, i.e. what the mod chose to forward.
@@ -1031,6 +1055,111 @@ int RunTests() {
     CHECK_EQ(InterlockedCompareExchange(&g_ownerLastMouseMessage, 0, 0),
              static_cast<LONG>(WM_LBUTTONUP));
 
+
+    printf("\n[6-drag] floating gesture defers clicks and cancels safely\n");
+    {
+        InterlockedExchange(&g_ownerClicks,0);
+        const TrayLayout layout=FloatingLayoutOf(2);
+        const LPARAM centre=MAKELPARAM(layout.cell/2,layout.cell/2);
+        SendMessageW(trayWnd,WM_LBUTTONDOWN,0,centre);
+        Pump();
+        CHECK_EQ(InterlockedCompareExchange(&g_ownerClicks,0,0),0);
+        SendMessageW(trayWnd,WM_CANCELMODE,0,0);
+        SendMessageW(trayWnd,WM_LBUTTONUP,0,centre);
+        Pump();
+        CHECK_EQ(InterlockedCompareExchange(&g_ownerClicks,0,0),0);
+        SendMessageW(trayWnd,WM_LBUTTONDOWN,0,centre);
+        SendMessageW(trayWnd,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(300,300));
+        SendMessageW(trayWnd,WM_LBUTTONUP,0,MAKELPARAM(300,300));
+        Pump();
+        CHECK_EQ(InterlockedCompareExchange(&g_ownerClicks,0,0),0);
+        CHECK(GetCapture() == nullptr);
+    }
+
+
+
+    printf("\n[6-order] a floating drag changes persisted order without a click\n");
+    {
+        const auto previousOrder=IconOrderSnapshot();
+        const auto view=FloatingViewOf(2,false);
+        CHECK(view.serials.size()>=2);
+        if (view.serials.size()>=2) {
+            const int cell=view.layout.cell;
+            const LPARAM from=MAKELPARAM(cell/2,cell/2);
+            const LPARAM to=MAKELPARAM((1%view.layout.columns)*cell+cell/2,(1/view.layout.columns)*cell+cell/2);
+            const auto originalKey=g_dragKeyState;
+            g_dragKeyState=+[](int key)->SHORT {return key==VK_LBUTTON ? static_cast<SHORT>(0x8000) : 0;};
+            InterlockedExchange(&g_ownerClicks,0);
+            SendMessageW(trayWnd,WM_LBUTTONDOWN,0,from);
+            SendMessageW(trayWnd,WM_MOUSEMOVE,MK_LBUTTON,to);
+            CHECK_EQ(FloatingTrayOfWindow(trayWnd)->insertionIndex,1);
+            CHECK(FloatingTrayOfWindow(trayWnd)->insertionAfter);
+            UpdateWindow(trayWnd); // Exercise marker painting while the gesture is active.
+            HWND dragImage=FindWindowW(L"SplitTrayDragVisual",nullptr);
+            CHECK(dragImage != nullptr);
+            if (dragImage) {
+                const LONG_PTR style=GetWindowLongPtrW(dragImage,GWL_EXSTYLE);
+                CHECK((style & (WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE)) == (WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE));
+                CHECK(IsWindowVisible(dragImage));
+                CHECK_EQ(SendMessageW(dragImage,WM_NCHITTEST,0,0),HTTRANSPARENT);
+                CHECK_EQ(SendMessageW(dragImage,WM_MOUSEACTIVATE,0,0),MA_NOACTIVATE);
+            }
+            SendMessageW(trayWnd,WM_LBUTTONUP,0,to);
+            CHECK_EQ(FloatingTrayOfWindow(trayWnd)->insertionIndex,-1);
+            CHECK(FindWindowW(L"SplitTrayDragVisual",nullptr)==nullptr);
+            // Finish the queued order refresh and paint before measuring resources.
+            SettleModThread(); UpdateWindow(trayWnd);
+            // Repeat complete drags: no retained layered windows, icons, DCs or DIBs.
+            const auto beforeResources=SnapshotGuiResources(trayWnd);
+            const DWORD gdiBefore=beforeResources.gdi;
+            const DWORD userBefore=beforeResources.user;
+            for (int repeat=0;repeat<12;++repeat) {
+                SendMessageW(trayWnd,WM_LBUTTONDOWN,0,from);
+                SendMessageW(trayWnd,WM_MOUSEMOVE,MK_LBUTTON,to);
+                CHECK(FindWindowW(L"SplitTrayDragVisual",nullptr)!=nullptr);
+                SendMessageW(trayWnd,WM_CANCELMODE,0,0);
+                CHECK_EQ(FloatingTrayOfWindow(trayWnd)->insertionIndex,-1);
+                CHECK(FindWindowW(L"SplitTrayDragVisual",nullptr)==nullptr);
+            }
+            const DWORD rawGdiAfter=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
+            // Cancellation now invalidates the insertion line. Wait for that paint
+            // to release its temporary copied icons, bitmap and DC before counting.
+            UpdateWindow(trayWnd);
+            const auto afterResources=SnapshotGuiResources(trayWnd);
+            const DWORD gdiAfter=afterResources.gdi;
+            const DWORD userAfter=afterResources.user;
+            printf("      cancellation resources: GDI before=%lu raw=%lu after-paint=%lu; USER before=%lu after=%lu\n",gdiBefore,rawGdiAfter,gdiAfter,userBefore,userAfter);
+            CHECK(gdiAfter<=gdiBefore+1);
+            CHECK(userAfter<=userBefore+1);
+            g_dragKeyState=originalKey;
+            Pump();
+            const auto after=FloatingViewOf(2,false);
+            CHECK(after.serials.size()>=2 && after.serials[0]==view.serials[1] && after.serials[1]==view.serials[0]);
+            CHECK(!IconOrderSnapshot().empty());
+            CHECK_EQ(InterlockedCompareExchange(&g_ownerClicks,0,0),0);
+            SetIconOrder(previousOrder); RequestRedrawOfAllTrays();
+        }
+    }
+
+    printf("\n[6-target] only actual visible trays accept a drop\n");
+    {
+        RECT rect{}; CHECK(GetWindowRect(trayWnd,&rect));
+        CHECK_EQ(TrayDropTargetAt({(rect.left+rect.right)/2,(rect.top+rect.bottom)/2}),2);
+        CHECK_EQ(TrayDropTargetAt({50000,50000}),0);
+        WNDCLASSW notifyClass{}; notifyClass.lpfnWndProc=DefWindowProcW;
+        notifyClass.hInstance=hInst; notifyClass.lpszClassName=L"TrayNotifyWnd";
+        RegisterClassW(&notifyClass);
+        HWND notify=CreateWindowExW(0,L"TrayNotifyWnd",L"",WS_CHILD|WS_VISIBLE,
+                                     0,0,16,16,g_fakeShellWnd,nullptr,hInst,nullptr);
+        CHECK(notify != nullptr);
+        ShowWindow(g_fakeShellWnd,SW_SHOWNOACTIVATE);
+        CHECK(GetWindowRect(notify,&rect));
+        CHECK_EQ(TrayDropTargetAt({(rect.left+rect.right)/2,(rect.top+rect.bottom)/2}),1);
+        ShowWindow(g_fakeShellWnd,SW_HIDE);
+        CHECK_EQ(TrayDropTargetAt({(rect.left+rect.right)/2,(rect.top+rect.bottom)/2}),0);
+        DestroyWindow(notify); UnregisterClassW(L"TrayNotifyWnd",hInst);
+    }
+
     // ---- the application can find its icon ---------------------------
     // From a live report: Telemachus stopped responding to clicks once its
     // icon was in the secondary tray - no menu, no window - and came back when
@@ -1599,6 +1728,19 @@ int RunTests() {
             arrange = FindWindowW(kArrangeClassName, nullptr);
             return arrange != nullptr && IsWindowVisible(arrange);
         }));
+        // Drive the real worker shortcuts, including restoring the manager.
+        PostMessageW(modWnd, WM_HOTKEY, 2, 0);
+        CHECK(PumpUntil([&] {
+            GUITHREADINFO info{sizeof(info)};
+            GetGUIThreadInfo(GetWindowThreadProcessId(modWnd,nullptr),&info);
+            WCHAR name[128]{}; GetClassNameW(info.hwndFocus,name,128);
+            return std::wstring(name)==kFloatingClassName;
+        }));
+        // A private desktop cannot become the user's foreground desktop.
+        // Restore is the observable hotkey effect that does not require that.
+        ShowWindow(arrange,SW_MINIMIZE); CHECK(IsIconic(arrange));
+        PostMessageW(modWnd, WM_HOTKEY, 1, 0);
+        CHECK(PumpUntil([&] { return !IsIconic(arrange) && IsWindowVisible(arrange); }));
         const ListViewCount count = CountListViews(arrange);
         CHECK(count.lists >= 2);
         CHECK_EQ(count.sharing, count.lists);
@@ -1609,10 +1751,46 @@ int RunTests() {
         const ArrangeMetrics m = ArrangeMetricsFor(dpi);
         RECT client = {};
         GetClientRect(arrange, &client);
-        CHECK_EQ(client.right, m.margin + count.lists * (m.listWidth + m.margin));
+        CHECK_EQ(client.right + GetSystemMetricsForDpi(SM_CXVSCROLL, dpi),
+                 m.margin + count.lists * (m.listWidth + m.margin));
+        MONITORINFO monitor{sizeof(monitor)};
+        GetMonitorInfoW(MonitorFromWindow(arrange, MONITOR_DEFAULTTONEAREST), &monitor);
+        RECT outer{}; GetWindowRect(arrange, &outer);
+        CHECK(outer.left >= monitor.rcWork.left && outer.right <= monitor.rcWork.right);
+        CHECK(outer.top >= monitor.rcWork.top && outer.bottom <= monitor.rcWork.bottom);
+        CHECK(GetDlgItem(arrange, kArrangeSearch) != nullptr);
+        CHECK(GetDlgItem(arrange, kArrangeUp) != nullptr);
+        SendMessageW(arrange, WM_VSCROLL, SB_BOTTOM, 0);
         CHECK_EQ(client.bottom, m.height);
         printf("      %ldx%ld at %u DPI\n", client.right, client.bottom, dpi);
 
+        // The DPI handler refreshes the actual controls without losing rows.
+        HWND firstList=GetDlgItem(arrange,kArrangeListIdBase);
+        const HFONT oldFont=reinterpret_cast<HFONT>(SendMessageW(firstList,WM_GETFONT,0,0));
+        const auto oldImages=ListView_GetImageList(firstList,LVSIL_SMALL);
+        const int oldRows=ListView_GetItemCount(firstList);
+        RECT bounds{}; GetWindowRect(arrange,&bounds);
+        SendMessageW(arrange,WM_DPICHANGED,MAKELONG(dpi,dpi),reinterpret_cast<LPARAM>(&bounds));
+        CHECK(reinterpret_cast<HFONT>(SendMessageW(firstList,WM_GETFONT,0,0)) != oldFont);
+        CHECK(ListView_GetImageList(firstList,LVSIL_SMALL) != oldImages);
+        CHECK_EQ(ListView_GetItemCount(firstList),oldRows);
+        SendMessageW(arrange,WM_VSCROLL,SB_BOTTOM,0);
+        CHECK(GetScrollPos(arrange,SB_VERT)>0);
+        for (UINT action : {SB_LINEUP,SB_LINEDOWN,SB_PAGEUP,SB_PAGEDOWN,SB_THUMBTRACK,SB_TOP})
+            SendMessageW(arrange,WM_VSCROLL,action,0);
+        CHECK_EQ(GetScrollPos(arrange,SB_VERT),0);
+        // A real modal status window is answered on this private desktop.
+        std::atomic<bool> statusSeen{false};
+        std::thread closeStatus([&] {
+            for (int attempt=0;attempt<400;++attempt) {
+                if (HWND dialog=FindWindowW(L"#32770",L"Split Tray status")) {
+                    statusSeen.store(true); PostMessageW(dialog,WM_CLOSE,0,0); return;
+                }
+                Sleep(25);
+            }
+        });
+        SendMessageW(arrange,WM_COMMAND,kArrangeStatus,0);
+        closeStatus.join(); CHECK(statusSeen.load());
         PostMessageW(arrange, WM_CLOSE, 0, 0);
         CHECK(PumpUntil([] { return FindWindowW(kArrangeClassName, nullptr) == nullptr; }));
         PostMessageW(modWnd, WM_ST_ARRANGE, 0, 0);
@@ -1851,6 +2029,27 @@ int RunTests() {
         CHECK(SelectRow(secondList, L"by the keyboard"));
         KeyInArrangeList(arrange, secondList, VK_NUMPAD1);
         CHECK(PumpUntil([&] { return ListHasRow(mainList, L"by the keyboard"); }));
+        // Search is live, case-insensitive and does not change placements.
+        HWND search = GetDlgItem(arrange, kArrangeSearch);
+        CHECK(search != nullptr);
+        SetWindowTextW(search, L"BY THE KEYBOARD");
+        CHECK(PumpUntil([&] { return rows(mainList) == 1; }));
+        CHECK(ListHasRow(mainList, L"by the keyboard"));
+        SetWindowTextW(search, L"no matching application xyz");
+        CHECK(PumpUntil([&] { return rows(mainList) == 0 && rows(secondList) == 0; }));
+        SetWindowTextW(search, L"");
+        CHECK(PumpUntil([&] { return ListHasRow(mainList, L"by the keyboard"); }));
+        CHECK(SelectRow(mainList, L"by the keyboard"));
+        SendMessageW(arrange, WM_COMMAND, kArrangeFollow, 0);
+        CHECK(PumpUntil([&] { return ListHasRow(secondList, L"by the keyboard"); }));
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            CHECK(g_placements.find(byKeys) == g_placements.end());
+        }
+        // Reorder through the visible controls and retain the selected row.
+        CHECK(SelectRow(secondList, L"by the keyboard"));
+        SendMessageW(arrange, WM_COMMAND, kArrangeUp, 0);
+        CHECK(PumpUntil([&] { return ReadStoredString(kIconOrderValue).find(byKeys) != std::wstring::npos; }));
         SendTrayNotification(NIM_DELETE, kByKeys, nullptr);
         CHECK(PumpUntil([&] { return rows(mainList) == mainRows; }));
         printf("      H hid an icon and brought it back; 1, Enter and the keypad's 1 "
@@ -2492,7 +2691,8 @@ int RunTests() {
     {
         CHECK(Wh_ModInit() == TRUE);
         Wh_ModAfterInit();
-        CHECK(PumpUntil([] { return g_shellTrayWnd.load() == g_fakeShellWnd; }));
+        CHECK(PumpUntil([] { return g_trayThreadState.load() == TrayThreadState::Running; }, 15000));
+        CHECK(PumpUntil([] { return g_shellTrayWnd.load() == g_fakeShellWnd; }, 15000));
         const size_t logAtWait = SplitTrayTestHarness::LogSnapshot().size();
         const int removals = WindhawkUtils::UnsubclassCallCount();
         g_settlingShell = true;  // a round under way on the taskbar's thread

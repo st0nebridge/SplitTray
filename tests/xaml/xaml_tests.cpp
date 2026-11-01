@@ -528,6 +528,8 @@ void Test_CellsAreSizedFromTheAnchorsHeight() {
         CHECK_EQ(static_cast<int>(tray->cellWidthDip + 0.5), static_cast<int>(c.width));
         CHECK_EQ(static_cast<int>(tray->cellHeightDip + 0.5), static_cast<int>(c.height));
         CHECK_EQ(static_cast<int>(tray->iconSizeDip + 0.5), static_cast<int>(c.icon));
+        CHECK_EQ(DragIconPixels(tray->number,96),static_cast<int>(c.icon));
+        CHECK_EQ(DragIconPixels(tray->number,144),static_cast<int>(c.icon*1.5));
     }
 
     // An anchor not laid out yet has no height: the native size, unscaled.
@@ -1265,6 +1267,180 @@ void Test_ShiftAndAClickSendsTheIconToThePrimaryTray() {
     DestroyWindow(t.owner);
 }
 
+
+
+
+
+
+
+
+int g_nativeVisualCorrections=0;
+void Test_ACancelledGhostCannotTransferWhenEscapeHasBeenReleased() {
+    auto t=MakeThreeIcons(EmbeddingSettings());
+    auto cell=CellOf(t.tray,t.a);
+    auto target=std::exchange(g_dropTargetAt,+[](POINT){return 1;});
+    X::CellPressed(cell,true,16); X::CellDragged(cell,80,10);
+    auto keys=std::exchange(g_dragKeyState,+[](int key)->SHORT {return key==VK_LBUTTON || key==VK_ESCAPE ? static_cast<SHORT>(0x8000) : 0;});
+    X::UpdateInsertionPreviewLifetime();
+    g_dragKeyState=keys; // Escape is no longer held by release time.
+    X::CellReleased(cell,true,kLeftDisplay,X::PointerButton::Left,false,NoCapture);
+    CHECK(CellOf(t.tray,t.a)!=nullptr); CHECK_EQ(SerialAt(t.tray,0),t.a);
+    { std::lock_guard<std::mutex> lock(g_mutex); auto icon=FindIconBySerialLocked(t.a); CHECK(icon && icon->shownTray==2); }
+    CHECK_EQ(cell.Opacity(),1.0);
+    g_dropTargetAt=target; DestroyWindow(t.owner);
+}
+
+void Test_InsertionLineTracksReorderWithoutChangingCells() {
+    auto t=MakeThreeIcons(EmbeddingSettings());
+    auto cell=CellOf(t.tray,t.a); auto panel=t.tray->panel.get();
+    const auto count=panel.Children().Size();
+    CHECK(X::CellPressed(cell,true,16)); CHECK(!X::g_drag.insertionLine);
+    CHECK(!X::CellDragged(cell,19,10)); CHECK(!X::g_drag.insertionLine);
+    CHECK(X::CellDragged(cell,80,10));
+    CHECK(static_cast<bool>(X::g_drag.insertionLine)); CHECK(X::g_drag.insertionLine.IsVisible());
+    CHECK_EQ(panel.Children().Size(),count);
+    CHECK_EQ(static_cast<int>(X::g_drag.insertionLine.Size().x),1);
+    CHECK_EQ(static_cast<int>(X::g_drag.insertionLine.Offset().x),95);
+    auto line=X::g_drag.insertionLine;
+    CHECK(X::CellDragged(cell,80,100)); CHECK(!line.IsVisible());
+    CHECK(X::CellDragged(cell,16,10)); CHECK(line.IsVisible());
+    CHECK_EQ(static_cast<int>(line.Offset().x),0);
+    X::CellReleased(cell,true,kLeftDisplay,X::PointerButton::Left,false,NoCapture);
+    CHECK(!X::g_drag.insertionLine);
+    CHECK(!winrt::Windows::UI::Xaml::Hosting::ElementCompositionPreview::GetElementChildVisual(panel));
+    CHECK(X::CellPressed(cell,true,16)); CHECK(X::CellDragged(cell,80,10));
+    X::CellCaptureLost(cell); CHECK(!X::g_drag.insertionLine);
+    CHECK(X::CellPressed(cell,true,80)); CHECK(X::CellDragged(cell,16,10));
+    auto keys=std::exchange(g_dragKeyState,+[](int key)->SHORT {return key==VK_ESCAPE || key==VK_LBUTTON ? static_cast<SHORT>(0x8000) : 0;});
+    ProcessDragHover(); CHECK(!X::g_drag.insertionLine); CHECK(X::g_drag.insertionCancelled);
+    CHECK(X::CellDragged(cell,80,10)); CHECK(!X::g_drag.insertionLine); // A cancelled preview cannot reappear.
+    g_dragKeyState=keys;
+    CHECK(X::CellPressed(cell,true,80)); CHECK(X::CellDragged(cell,16,10));
+    X::RemoveEverything(); CHECK(!X::g_drag.insertionLine);
+    DestroyWindow(t.owner);
+}
+
+void Test_NativeDragVisualChangesOnlyForKnownSecondaryTargets() {
+    ResetEverything(EmbeddingSettings());
+    auto oldTarget=std::exchange(g_dropTargetAt,+[](POINT){return 2;});
+    auto oldState=std::exchange(X::g_nativeDragGoToState,+[](wuxc::Control const&){++g_nativeVisualCorrections;return true;});
+    auto t=MakeThreeIcons(EmbeddingSettings());
+    wuxc::Button visual;
+    wf::IInspectable projected=visual;
+    X::CaptureNativeDragVisual(&projected);
+    CHECK(X::g_nativeDragVisual.get()==visual.as<wuxc::Control>());
+    CHECK_EQ(X::g_nativeDragThread,GetCurrentThreadId());
+    X::CaptureNativeDragVisual(nullptr); CHECK(!X::g_nativeDragVisual.get());
+    X::CaptureNativeDragVisual(&projected);
+    g_dragFeedbackSerial.store(t.b); g_dragFeedbackSource.store(2);
+    g_nativeVisualCorrections=0; X::CorrectNativeDragVisual(); CHECK_EQ(g_nativeVisualCorrections,0);
+    g_dragFeedbackSource.store(1); X::CorrectNativeDragVisual(); CHECK_EQ(g_nativeVisualCorrections,0);
+    { std::lock_guard<std::mutex> lock(g_mutex); auto icon=FindIconBySerialLocked(t.b); icon->shownTray=1; icon->forwardedToShell=true; icon->shellHidden=false; }
+    X::CorrectNativeDragVisual(); CHECK_EQ(g_nativeVisualCorrections,1);
+    X::g_nativeDragThread=GetCurrentThreadId()+1; X::CorrectNativeDragVisual(); CHECK_EQ(g_nativeVisualCorrections,1);
+    X::g_nativeDragThread=GetCurrentThreadId();
+    g_dropTargetAt=+[](POINT){return 1;}; X::CorrectNativeDragVisual(); CHECK_EQ(g_nativeVisualCorrections,1);
+    g_dropTargetAt=+[](POINT){return 2;}; g_unloading.store(true); X::CorrectNativeDragVisual(); CHECK_EQ(g_nativeVisualCorrections,1); g_unloading.store(false);
+    X::RemoveEverything(); CHECK(!X::g_nativeDragVisual.get());
+    g_dragFeedbackSerial.store(0); g_dragFeedbackSource.store(0);
+    X::g_nativeDragGoToState=oldState; g_dropTargetAt=oldTarget; DestroyWindow(t.owner);
+}
+
+void Test_OtherButtonPressClosesPendingPopupWithoutStartingADrag() {
+    auto t=MakeThreeIcons(EmbeddingSettings());
+    auto cell=CellOf(t.tray,t.b);
+    X::g_popupWaiting=t.b; X::g_heldIcon=t.b;
+    X::g_drag.pointerDown=true; X::g_drag.dragging=true;
+    X::CellOtherPressed(cell);
+    CHECK_EQ(X::g_popupWaiting,0u); CHECK_EQ(X::g_heldIcon,0u);
+    CHECK(!X::g_drag.pointerDown && !X::g_drag.dragging);
+    X::CellReleased(cell,true,kLeftDisplay,X::PointerButton::Right,false,NoCapture);
+    Pump(); CHECK(ReceivedMouseMessages()==(std::vector<UINT>{WM_RBUTTONDOWN,WM_RBUTTONUP}));
+    DestroyWindow(t.owner);
+}
+
+void Test_AFallbackPressStillClicksWhenItDoesNotMove() {
+    auto t=MakeThreeIcons(EmbeddingSettings());
+    auto cell=CellOf(t.tray,t.b);
+    X::CellPressed(cell,true,48);
+    X::g_drag.observed=true; X::g_drag.screenStart={100,100};
+    X::g_drag.pointerDown=false; // CapturePointer refused, not PointerCanceled.
+    POINT point{100,100};
+    X::CellReleased(cell,true,kLeftDisplay,X::PointerButton::Left,false,NoCapture,&point);
+    Pump();
+    CHECK(ReceivedMouseMessages()==(std::vector<UINT>{WM_LBUTTONDOWN,WM_LBUTTONUP}));
+    g_received.clear();
+    X::CellPressed(cell,true,48);
+    X::g_drag.observed=true; X::g_drag.screenStart={100,100}; X::g_drag.pointerDown=false;
+    point={100,500};
+    auto previous=std::exchange(g_dropTargetAt,+[](POINT){return 0;});
+    X::CellReleased(cell,true,kLeftDisplay,X::PointerButton::Left,false,NoCapture,&point);
+    g_dropTargetAt=previous;
+    Pump(); CHECK(g_received.empty());
+    DestroyWindow(t.owner);
+}
+
+void Test_EmbeddedDropTargetsFollowPanelBounds() {
+    auto t=MakeThreeIcons(EmbeddingSettings());
+    auto panel=t.tray->panel.get();
+    RECT bounds{}; CHECK(X::ElementScreenRect(*t.tray,panel,&bounds));
+    POINT inside{(bounds.left+bounds.right)/2,(bounds.top+bounds.bottom)/2};
+    CHECK_EQ(X::EmbeddedDropTargetAt(inside),0); // fixture taskbar is hidden
+    auto visible=std::exchange(g_dropWindowVisible,+[](HWND)->BOOL {return TRUE;});
+    CHECK_EQ(X::EmbeddedDropTargetAt(inside),2);
+    CHECK_EQ(TrayDropTargetAt(inside),2);
+    CHECK_EQ(X::EmbeddedDropTargetAt({bounds.right+100,bounds.bottom+100}),0);
+    g_dropWindowVisible=visible;
+    DestroyWindow(t.owner);
+}
+
+void Test_AnOverflowTransferIsNotAnApplicationClick() {
+    auto settings=EmbeddingSettings(); settings.maxVisibleIcons=1;
+    auto t=MakeThreeIcons(settings);
+    auto popupCell=X::MakeCell(*t.tray,t.tray->hiddenEntries.front(),false);
+    CHECK(!X::CellPressed(popupCell,false,0));
+    X::g_drag.screenStart={100,100}; X::g_drag.observed=true;
+    POINT release{100,-100};
+    auto previous=std::exchange(g_dropTargetAt,+[](POINT){return 1;});
+    X::CellReleased(popupCell,false,kLeftDisplay,X::PointerButton::Left,false,NoCapture,&release);
+    g_dropTargetAt=previous;
+    Pump();
+    CHECK(g_received.empty());
+    CHECK(g_placements[L"thing.exe#2"] == Destination::Primary);
+    DestroyWindow(t.owner);
+}
+
+void Test_ADesktopDropLeavesTheIconInItsTray() {
+    auto t=MakeThreeIcons(EmbeddingSettings());
+    auto cell=CellOf(t.tray,t.b);
+    auto previous=std::exchange(g_dropTargetAt,+[](POINT){return 0;});
+    X::CellPressed(cell,true,48);
+    CHECK(X::CellDragged(cell,5000,10));
+    CHECK(X::g_drag.outside);
+    X::CellReleased(cell,true,kLeftDisplay,X::PointerButton::Left,false,NoCapture);
+    Pump();
+    CHECK(CellOf(t.tray,t.b) != nullptr);
+    CHECK(g_received.empty());
+    CHECK(g_placements.empty());
+    g_dropTargetAt=previous;
+    DestroyWindow(t.owner);
+}
+
+void Test_AVerticalGestureStartsDraggingWithoutActivatingTheIcon() {
+    auto t = MakeThreeIcons(EmbeddingSettings());
+    auto cell = CellOf(t.tray,t.b);
+    CHECK(X::CellPressed(cell,true,48));
+    CHECK(X::CellDragged(cell,48,-80));
+    CHECK(X::g_drag.dragging);
+    CHECK(X::g_drag.outside);
+    X::CellCaptureLost(cell);
+    X::CellReleased(cell,true,kLeftDisplay,X::PointerButton::Left,false,NoCapture);
+    Pump();
+    CHECK(g_received.empty());
+    CHECK(CellOf(t.tray,t.b) != nullptr);
+    DestroyWindow(t.owner);
+}
+
 void Test_DraggingAlongTheRowReordersItAndIsNotAClick() {
     ThreeIcons t = MakeThreeIcons(EmbeddingSettings());
     CHECK(t.tray != nullptr);
@@ -1279,17 +1455,20 @@ void Test_DraggingAlongTheRowReordersItAndIsNotAClick() {
     // Past the threshold, it is a drag, and the cell walks along the row.
     CHECK(X::CellDragged(cell, 80, 10));
     CHECK(X::g_drag.dragging);
-    CHECK_EQ(SerialAt(t.tray, 0), t.b);
-    CHECK_EQ(SerialAt(t.tray, 1), t.c);
-    CHECK_EQ(SerialAt(t.tray, 2), t.a);
+    CHECK_EQ(SerialAt(t.tray, 0), t.a);
+    CHECK_EQ(SerialAt(t.tray, 1), t.b);
+    CHECK_EQ(SerialAt(t.tray, 2), t.c);
+    CHECK(std::abs(cell.Opacity()-0.4)<0.01); // The source stays as a ghost until release.
     // The dragged cell never left the panel, so it kept the pointer.
-    CHECK(CellsOf(t.tray)[2] == cell);
+    CHECK(CellsOf(t.tray)[0] == cell);
 
     bool released = false;
     X::CellReleased(cell, true, kLeftDisplay, X::PointerButton::Left, false,
                     [&] { released = true; });
     Pump();
     CHECK(released);
+    CHECK_EQ(cell.Opacity(),1.0);
+    CHECK_EQ(SerialAt(t.tray,0),t.b); CHECK_EQ(SerialAt(t.tray,1),t.c); CHECK_EQ(SerialAt(t.tray,2),t.a);
     CHECK(g_received.empty());
     CHECK_WSTR(SplitTrayTestHarness::StoredValues()[kIconOrderValue],
                L"thing.exe#2\nthing.exe#3\nthing.exe#1");
@@ -1322,10 +1501,13 @@ void Test_DraggingOffTheRowSendsTheIconToThePrimaryTray() {
     CHECK_EQ(SerialAt(t.tray, 1), t.b);
     // Back over the row, it is a reorder again.
     CHECK(X::CellDragged(cell, 60, 10));
-    CHECK(!X::g_drag.outside && cell.Opacity() == 1.0);
+    CHECK(!X::g_drag.outside && std::abs(cell.Opacity()-0.4)<0.01);
     CHECK(X::CellDragged(cell, 60, 80));
 
+    const auto previousTarget=std::exchange(g_dropTargetAt,+[](POINT){return 1;});
     X::CellReleased(cell, true, kLeftDisplay, X::PointerButton::Left, false, NoCapture);
+    g_dropTargetAt=previousTarget;
+    X::RefreshEmbeddedTray();
     Pump();
     CHECK(g_received.empty());
     CHECK(CellOf(t.tray, t.b) == nullptr);
@@ -1336,7 +1518,7 @@ void Test_DraggingOffTheRowSendsTheIconToThePrimaryTray() {
 }
 
 void Test_ADragCutShortKeepsItsOrderAndIsNotAClick() {
-    // Capture can be taken away mid-drag. The order so far is kept, and the
+    // Capture can be taken away mid-drag. The original order is kept, and the
     // release after it is not a click on whatever the icon sat over.
     ThreeIcons t = MakeThreeIcons(EmbeddingSettings());
     CHECK(t.tray != nullptr);
@@ -1344,11 +1526,12 @@ void Test_ADragCutShortKeepsItsOrderAndIsNotAClick() {
         return;
     }
     auto cell = CellOf(t.tray, t.a);
+    const auto originalOrder=SplitTrayTestHarness::StoredValues()[kIconOrderValue];
     X::CellPressed(cell, true, 16);
     X::CellDragged(cell, 48, 10);
     X::CellCaptureLost(cell);
-    CHECK_WSTR(SplitTrayTestHarness::StoredValues()[kIconOrderValue],
-               L"thing.exe#2\nthing.exe#1\nthing.exe#3");
+    CHECK_WSTR(SplitTrayTestHarness::StoredValues()[kIconOrderValue],originalOrder.c_str());
+    CHECK_EQ(SerialAt(t.tray,0),t.a); CHECK_EQ(cell.Opacity(),1.0);
     CHECK(X::g_drag.suppressClick);
     CHECK(!X::g_drag.pointerDown && !X::g_drag.dragging);
 
@@ -1357,10 +1540,13 @@ void Test_ADragCutShortKeepsItsOrderAndIsNotAClick() {
     CHECK(g_received.empty());
     CHECK(!X::g_drag.suppressClick);
 
-    // Capture lost with no drag under way changes nothing.
+    // A cancelled press must not turn its eventual release into activation.
     X::CellPressed(cell, true, 48);
     X::CellCaptureLost(cell);
-    CHECK(!X::g_drag.suppressClick);
+    CHECK(X::g_drag.suppressClick);
+    X::CellReleased(cell,true,kLeftDisplay,X::PointerButton::Left,false,NoCapture);
+    Pump();
+    CHECK(g_received.empty());
     DestroyWindow(t.owner);
 }
 
@@ -1477,6 +1663,40 @@ void Test_TheChevronOpensTheOverflowWithItsIcons() {
     DestroyWindow(t.owner);
 }
 
+
+void Test_TrayControlsAreInvokableButtons() {
+    Settings settings=EmbeddingSettings(); settings.maxVisibleIcons=1;
+    ThreeIcons t = MakeThreeIcons(settings);
+    auto handle = X::MakeTrayHandle(*t.tray);
+    auto face = X::FaceOfCell(handle);
+    CHECK(face && face.IsTabStop());
+    CHECK(face && NameOf(face) == L"Split Tray, no icons here yet");
+    auto chevron = X::MakeChevron(*t.tray);
+    face = X::FaceOfCell(chevron);
+    CHECK(face && face.IsTabStop());
+    CHECK(face && NameOf(face) == L"Show hidden icons");
+    wuxap::ButtonAutomationPeer peer(face);
+    peer.as<wuxapr::IInvokeProvider>().Invoke(); Pump();
+    CHECK(X::g_overflowFlyout != nullptr);
+    DestroyWindow(t.owner);
+}
+
+void Test_OpenOverflowUpdatesItsExistingCells() {
+    Settings s = EmbeddingSettings(); s.maxVisibleIcons = 1;
+    ThreeIcons t = MakeThreeIcons(s);
+    X::ChevronReleased(CellsOf(t.tray)[0], kLeftDisplay, false);
+    Pump();
+    auto grid = X::g_overflowFlyout.Content().as<wuxc::VariableSizedWrapGrid>();
+    auto before = grid.Children().GetAt(0).as<wuxc::Border>();
+    Feed(MakePayload(NIM_MODIFY, t.owner, 2, NIF_TIP, L"beta updated", nullptr));
+    X::RefreshTray(*t.tray);
+    auto after = grid.Children().GetAt(0).as<wuxc::Border>();
+    CHECK(before == after);
+    CHECK_WSTR(NameOf(X::FaceOfCell(after)), L"beta updated");
+    CHECK_WSTR(TooltipOf(after), L"beta updated");
+    DestroyWindow(t.owner);
+}
+
 void Test_UnloadingLetsGoOfEveryXamlObjectTheModHolds() {
     // DECISIONS 94. The C++ runtime destroys none of the globals that hold
     // XAML, since at Explorer's exit it would do so on the wrong thread after
@@ -1574,7 +1794,7 @@ void Test_TheModsMenuOnAnIconOffersEveryChoice() {
     auto menu = X::BuildTrayContextMenu(t.a, kLeftDisplay);
     const std::wstring moveTo = L"Move to " + TrayLabel(1);
     CHECK(TextsOf(menu) == (std::vector<std::wstring>{
-                               moveTo, L"Hide in the overflow menu",
+                               moveTo, L"Hide in the overflow menu", L"Follow rules for this icon",
                                L"> Move an icon to this tray", L"---", L"Arrange icons\u2026",
                                L"Reset icon order", L"Show every hidden icon",
                                L"Reset moved icons"}));
@@ -1595,6 +1815,14 @@ void Test_TheModsMenuOnAnIconOffersEveryChoice() {
           std::wstring::npos);
     Choose(ItemCalled(menu, L"Reset moved icons"));
     CHECK(SplitTrayTestHarness::StoredValues()[kPlacementValue].empty());
+
+    // One icon can return to its rules without clearing another placement.
+    SplitTray::MoveIconToTray(L"thing.exe#1",Destination::Secondary);
+    SplitTray::MoveIconToTray(L"thing.exe#2",Destination::Primary);
+    menu=X::BuildTrayContextMenu(t.a,kLeftDisplay);
+    Choose(ItemCalled(menu,L"Follow rules for this icon"));
+    CHECK(SplitTrayTestHarness::StoredValues()[kPlacementValue].find(L"thing.exe#1=") == std::wstring::npos);
+    CHECK(SplitTrayTestHarness::StoredValues()[kPlacementValue].find(L"thing.exe#2=") != std::wstring::npos);
 
     // The order forgotten.
     SplitTrayTestHarness::StoredValues()[kIconOrderValue] = L"thing.exe#3";
@@ -1647,6 +1875,25 @@ void Test_TheEmptyTraysMenuBringsIconsHere() {
 // ---------------------------------------------------------------------------
 // The taskbar's thread, asked from elsewhere
 // ---------------------------------------------------------------------------
+
+
+void Test_EmbeddedRefreshBurstsAreCoalesced() {
+    ResetEverything(EmbeddingSettings());
+    HWND shell = MakeShellStandIn();
+    g_shellTrayWnd.store(shell);
+    g_embeddedRefresh.Consume(shell);
+    for (int i = 0; i < 1000; ++i) X::RequestEmbeddedRefresh();
+    CHECK(TakePosted(shell, GetXamlRefreshMessage()));
+    CHECK(!TakePosted(shell, GetXamlRefreshMessage()));
+    // Dispatch the real handler; it releases the pending wake before drawing.
+    ShellTrayWndSubclassProc(shell, GetXamlRefreshMessage(), 0, 0, 0);
+    X::RequestEmbeddedRefresh();
+    CHECK(TakePosted(shell, GetXamlRefreshMessage()));
+    CHECK(!TakePosted(shell, GetXamlRefreshMessage()));
+    ShellTrayWndSubclassProc(shell, GetXamlRefreshMessage(), 0, 0, 0);
+    g_shellTrayWnd.store(nullptr);
+    DestroyWindow(shell);
+}
 
 void Test_AChangeToTheStoreRedrawsTheTray() {
     ResetEverything(EmbeddingSettings());
@@ -1930,6 +2177,75 @@ struct TestRunner {
 
 }  // namespace
 
+
+void Test_TrayWidthProtectsTaskbarSpace() {
+    CHECK_EQ(X::VisibleLimitForWidth(8,32,96),2);
+    CHECK_EQ(X::VisibleLimitForWidth(0,32,96),2);
+    CHECK_EQ(X::VisibleLimitForWidth(1,32,96),1);
+    CHECK_EQ(X::VisibleLimitForWidth(8,32,1),1);
+    CHECK_EQ(X::VisibleLimitForWidth(8,0,96),8);
+}
+
+
+void Test_OverflowReusesPicturesAndInheritsDirection() {
+    Settings settings=EmbeddingSettings(); settings.maxVisibleIcons=1;
+    ThreeIcons t=MakeThreeIcons(settings);
+    HICON picture=MakeIcon(10,200,10);
+    Feed(MakePayload(NIM_MODIFY,t.owner,2,NIF_ICON,nullptr,picture));
+    X::RefreshTray(*t.tray);
+    auto handle=t.tray->hiddenEntries[0].icon.get();
+    CHECK(handle != nullptr);
+    X::RefreshTray(*t.tray);
+    CHECK(t.tray->hiddenEntries[0].icon.get() == handle);
+    PanelOf(t.tray).FlowDirection(wux::FlowDirection::RightToLeft);
+    CHECK(X::OverflowContent(*t.tray).FlowDirection() == wux::FlowDirection::RightToLeft);
+    X::FocusIconCell(t.b); Pump();
+    auto focused=wux::Input::FocusManager::GetFocusedElement(g_island.root.XamlRoot());
+    CHECK(focused == X::FaceOfCell(CellsOf(t.tray)[0]));
+    DestroyIcon(picture); DestroyWindow(t.owner);
+}
+
+void Test_ATouchHoldIsAMenuWithoutATap() {
+    ThreeIcons t=MakeThreeIcons(EmbeddingSettings());
+    auto cell=CellOf(t.tray,t.a);
+    X::BeginCellHold(cell);
+    X::CellReleased(cell,true,kLeftDisplay,X::PointerButton::Left,false,NoCapture);
+    Pump(); CHECK(g_received.empty());
+    X::EndCellHold(cell); Pump();
+    CHECK(ReceivedMouseMessages() == (std::vector<UINT>{WM_RBUTTONDOWN,WM_RBUTTONUP}));
+    g_received.clear();
+    X::EndCellHold(cell); Pump(); CHECK(g_received.empty());
+    DestroyWindow(t.owner);
+}
+
+void Test_PointerCoordinatesReachTheApplication() {
+    ThreeIcons t=MakeThreeIcons(EmbeddingSettings());
+    Feed(MakePayload(NIM_SETVERSION,t.owner,1,0,nullptr,nullptr));
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        const int index=IndexOfSerialLocked(t.a); g_icons[index].version=NOTIFYICON_VERSION_4;
+    }
+    const POINT point{-1500,1000};
+    X::CellReleased(CellOf(t.tray,t.a),true,kLeftDisplay,X::PointerButton::Left,false,NoCapture,&point);
+    Pump();
+    CHECK(!g_received.empty());
+    CHECK(g_received.size() && GET_X_LPARAM(g_received[0].wParam) == point.x);
+    CHECK(g_received.size() && GET_Y_LPARAM(g_received[0].wParam) == point.y);
+    DestroyWindow(t.owner);
+}
+
+void Test_ThemeFeedbackUsesTheElementTheme() {
+    HIGHCONTRASTW hc{sizeof(hc)};
+    SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(hc),&hc,0);
+    const auto light=X::HoverBrush(wux::ElementTheme::Light).Color();
+    const auto dark=X::HoverBrush(wux::ElementTheme::Dark).Color();
+    if (!(hc.dwFlags & HCF_HIGHCONTRASTON)) {
+        CHECK(light.R==0 && light.G==0 && light.B==0);
+        CHECK(dark.R==255 && dark.G==255 && dark.B==255);
+        CHECK(X::PressedBrush(wux::ElementTheme::Dark).Color().A > dark.A);
+    } else CHECK(light.A==255 && dark.A==255);
+}
+
 int main() {
     printf("split-tray XAML tests (a hosted island, the mod's section 10)\n\n");
     winrt::init_apartment(winrt::apartment_type::single_threaded);
@@ -1939,6 +2255,24 @@ int main() {
     }
 
     TestRunner runner;
+    runner.Run("cancelled ghost cannot transfer after Escape is released",Test_ACancelledGhostCannotTransferWhenEscapeHasBeenReleased);
+    runner.Run("insertion line tracks reorder without changing cells",Test_InsertionLineTracksReorderWithoutChangingCells);
+
+    runner.Run("native drag visual is scoped to known secondary targets",Test_NativeDragVisualChangesOnlyForKnownSecondaryTargets);
+    runner.Run("other-button press closes popup without dragging",Test_OtherButtonPressClosesPendingPopupWithoutStartingADrag);
+    runner.Run("capture fallback preserves clicks without movement",Test_AFallbackPressStillClicksWhenItDoesNotMove);
+    runner.Run("embedded drop targets follow panel bounds",Test_EmbeddedDropTargetsFollowPanelBounds);
+    runner.Run("overflow transfer does not activate the application",Test_AnOverflowTransferIsNotAnApplicationClick);
+    runner.Run("desktop drop does not move or activate an icon",Test_ADesktopDropLeavesTheIconInItsTray);
+    runner.Run("vertical gesture starts a drag without activation", Test_AVerticalGestureStartsDraggingWithoutActivatingTheIcon);
+    runner.Run("theme feedback uses the element theme",Test_ThemeFeedbackUsesTheElementTheme);
+    runner.Run("overflow reuses pictures and inherits direction",Test_OverflowReusesPicturesAndInheritsDirection);
+    runner.Run("a touch hold is a menu without a tap",Test_ATouchHoldIsAMenuWithoutATap);
+    runner.Run("pointer coordinates reach the application",Test_PointerCoordinatesReachTheApplication);
+    runner.Run("tray width protects taskbar space", Test_TrayWidthProtectsTaskbarSpace);
+    runner.Run("tray controls are invokable buttons", Test_TrayControlsAreInvokableButtons);
+    runner.Run("open overflow updates existing cells", Test_OpenOverflowUpdatesItsExistingCells);
+    runner.Run("embedded refresh bursts are coalesced", Test_EmbeddedRefreshBurstsAreCoalesced);
     printf("where the tray goes\n");
     runner.Run("the tray goes into the row, before the anchor's wrapper",
                Test_TheTrayGoesIntoTheRowBeforeTheAnchorsWrapper);

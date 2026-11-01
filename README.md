@@ -102,6 +102,11 @@ keep an icon in overflow. **Show on the tray** also works for icons overflowed
 by the visible-count or width limit: it moves the chosen icon ahead of the other
 icons, within the same space budget. Another icon can take its overflow place.
 
+Moving icons between trays preserves their remembered order, including moves
+from menus and Arrange and round trips through the primary tray. Only explicit
+**Show on the tray** and dragging out of overflow promote an icon to the front
+to reveal it within the space budget. Drop onto a chevron or popup to hide it.
+
 Every move is remembered, including across restarts, and it outranks the rules.
 **Reset moved icons** in the menu hands every icon back to the rules. An icon
 not seen for a year is forgotten: where it was moved, whether it was hidden, and

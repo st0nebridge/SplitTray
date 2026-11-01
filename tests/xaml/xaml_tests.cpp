@@ -1294,29 +1294,29 @@ void Test_InsertionLineTracksReorderWithoutChangingCells() {
     auto t=MakeThreeIcons(EmbeddingSettings());
     auto cell=CellOf(t.tray,t.a); auto panel=t.tray->panel.get();
     const auto count=panel.Children().Size();
-    CHECK(X::CellPressed(cell,true,16)); CHECK(!X::g_drag.insertionLine);
-    CHECK(!X::CellDragged(cell,19,10)); CHECK(!X::g_drag.insertionLine);
+    CHECK(X::CellPressed(cell,true,16)); CHECK(!X::g_insertionLine);
+    CHECK(!X::CellDragged(cell,19,10)); CHECK(!X::g_insertionLine);
     CHECK(X::CellDragged(cell,80,10));
-    CHECK(static_cast<bool>(X::g_drag.insertionLine)); CHECK(X::g_drag.insertionLine.IsVisible());
+    CHECK(static_cast<bool>(X::g_insertionLine)); CHECK(X::g_insertionLine.IsVisible());
     CHECK_EQ(panel.Children().Size(),count);
-    CHECK_EQ(static_cast<int>(X::g_drag.insertionLine.Size().x),1);
-    CHECK_EQ(static_cast<int>(X::g_drag.insertionLine.Offset().x),95);
-    auto line=X::g_drag.insertionLine;
+    CHECK_EQ(static_cast<int>(X::g_insertionLine.Size().x),1);
+    CHECK_EQ(static_cast<int>(X::g_insertionLine.Offset().x),95);
+    auto line=X::g_insertionLine;
     CHECK(X::CellDragged(cell,80,100)); CHECK(!line.IsVisible());
     CHECK(X::CellDragged(cell,16,10)); CHECK(line.IsVisible());
     CHECK_EQ(static_cast<int>(line.Offset().x),0);
     X::CellReleased(cell,true,kLeftDisplay,X::PointerButton::Left,false,NoCapture);
-    CHECK(!X::g_drag.insertionLine);
+    CHECK(!X::g_insertionLine);
     CHECK(!winrt::Windows::UI::Xaml::Hosting::ElementCompositionPreview::GetElementChildVisual(panel));
     CHECK(X::CellPressed(cell,true,16)); CHECK(X::CellDragged(cell,80,10));
-    X::CellCaptureLost(cell); CHECK(!X::g_drag.insertionLine);
+    X::CellCaptureLost(cell); CHECK(!X::g_insertionLine);
     CHECK(X::CellPressed(cell,true,80)); CHECK(X::CellDragged(cell,16,10));
     auto keys=std::exchange(g_dragKeyState,+[](int key)->SHORT {return key==VK_ESCAPE || key==VK_LBUTTON ? static_cast<SHORT>(0x8000) : 0;});
-    ProcessDragHover(); CHECK(!X::g_drag.insertionLine); CHECK(X::g_drag.insertionCancelled);
-    CHECK(X::CellDragged(cell,80,10)); CHECK(!X::g_drag.insertionLine); // A cancelled preview cannot reappear.
+    ProcessDragHover(); CHECK(!X::g_insertionLine); CHECK(X::g_drag.insertionCancelled);
+    CHECK(X::CellDragged(cell,80,10)); CHECK(!X::g_insertionLine); // A cancelled preview cannot reappear.
     g_dragKeyState=keys;
     CHECK(X::CellPressed(cell,true,80)); CHECK(X::CellDragged(cell,16,10));
-    X::RemoveEverything(); CHECK(!X::g_drag.insertionLine);
+    X::RemoveEverything(); CHECK(!X::g_insertionLine);
     DestroyWindow(t.owner);
 }
 
@@ -1414,6 +1414,81 @@ void Test_SecondaryChevronIsAnOverflowDropTarget() {
     settings.maxVisibleIcons=8; ApplySettings(settings); X::RefreshTray(*t.tray);
     CHECK_EQ(X::OverflowDropTargetAt(inside),0);
     g_dropWindowVisible=visible;
+    DestroyWindow(t.owner);
+}
+
+
+int g_popupBoundsQueries = 0;
+bool TestPopupBounds(wux::FrameworkElement const& face, wf::Rect* out) {
+    ++g_popupBoundsQueries;
+    const float scale = static_cast<float>(face.XamlRoot().RasterizationScale());
+    *out = {-1400, -600, static_cast<float>(face.ActualWidth()) * scale,
+            static_cast<float>(face.ActualHeight()) * scale};
+    return true;
+}
+
+void Test_OverflowHoverUsesOneScreenOriginAndLiveLayout() {
+    auto settings = EmbeddingSettings(); settings.maxVisibleIcons = 1;
+    auto t = MakeThreeIcons(settings);
+    auto visible = std::exchange(g_dropWindowVisible, +[](HWND)->BOOL {return TRUE;});
+    X::ChevronReleased(CellsOf(t.tray)[0], kLeftDisplay, false); Pump();
+    auto grid = X::g_overflowFlyout.Content().as<wuxc::VariableSizedWrapGrid>();
+    auto reference = X::OverflowPresenter(grid);
+    CHECK(reference != nullptr);
+    auto first = X::FaceOfCell(grid.Children().GetAt(0).as<wuxc::Border>());
+    auto second = X::FaceOfCell(grid.Children().GetAt(1).as<wuxc::Border>());
+    CHECK(first.ActualWidth() > 0); CHECK(second.ActualWidth() > 0);
+    // Prove the production UIA bridge works on the actual popup presenter.
+    wf::Rect liveBounds{};
+    CHECK(X::g_overflowScreenBounds(reference, &liveBounds));
+    CHECK(liveBounds.Width > 0 && liveBounds.Height > 0);
+    CHECK(!first.IsHitTestVisible()); // the surrounding cell receives input
+    const auto center = first.TransformToVisual(reference).TransformPoint(
+        {static_cast<float>(first.ActualWidth()/2), static_cast<float>(first.ActualHeight()/2)});
+    const double liveScale = reference.XamlRoot().RasterizationScale();
+    CHECK_EQ(X::OverflowDropTargetAt({static_cast<LONG>(liveBounds.X+center.X*liveScale),
+                                    static_cast<LONG>(liveBounds.Y+center.Y*liveScale)}), 2);
+    auto query = std::exchange(X::g_overflowScreenBounds, TestPopupBounds);
+    g_popupBoundsQueries = 0;
+    const double scale = first.XamlRoot().RasterizationScale();
+    auto firstBounds = first.TransformToVisual(reference).TransformBounds(
+        {0, 0, static_cast<float>(first.ActualWidth()), static_cast<float>(first.ActualHeight())});
+    CHECK_EQ(X::OverflowDropTargetAt({
+        static_cast<LONG>(-1400+(firstBounds.X+firstBounds.Width/2)*scale),
+        static_cast<LONG>(-600+(firstBounds.Y+firstBounds.Height/2)*scale)}), 2);
+    CHECK_EQ(g_popupBoundsQueries, 1);
+    auto bounds = second.TransformToVisual(reference).TransformBounds(
+        {0, 0, static_cast<float>(second.ActualWidth()), static_cast<float>(second.ActualHeight())});
+    POINT target{static_cast<LONG>(-1400+(bounds.X+bounds.Width/2)*scale),
+                 static_cast<LONG>(-600+(bounds.Y+bounds.Height/2)*scale)};
+    CHECK_EQ(X::OverflowDropTargetAt(target), 2);
+    CHECK_EQ(g_popupBoundsQueries, 2); // two cells, still one query per hover
+    CHECK_EQ(X::OverflowDropTargetAt({-3000, -2000}), 0);
+    CHECK_EQ(g_popupBoundsQueries, 3);
+    // Every call uses current layout: RTL moves the second cell to the other side.
+    grid.FlowDirection(wux::FlowDirection::RightToLeft); Pump();
+    bounds = second.TransformToVisual(reference).TransformBounds(
+        {0, 0, static_cast<float>(second.ActualWidth()), static_cast<float>(second.ActualHeight())});
+    target = {static_cast<LONG>(-1400+(bounds.X+bounds.Width/2)*scale),
+              static_cast<LONG>(-600+(bounds.Y+bounds.Height/2)*scale)};
+    CHECK_EQ(X::OverflowDropTargetAt(target), 2);
+    CHECK_EQ(g_popupBoundsQueries, 4);
+    // A cell transformed beyond the presenter's viewport is not a destination.
+    auto transform = winrt::Windows::UI::Xaml::Media::TranslateTransform();
+    transform.Y(-1000);
+    second.RenderTransform(transform);
+    Pump();
+    bounds = second.TransformToVisual(reference).TransformBounds(
+        {0, 0, static_cast<float>(second.ActualWidth()), static_cast<float>(second.ActualHeight())});
+    target = {static_cast<LONG>(-1400+(bounds.X+bounds.Width/2)*scale),
+              static_cast<LONG>(-600+(bounds.Y+bounds.Height/2)*scale)};
+    CHECK_EQ(X::OverflowDropTargetAt(target), 0);
+    CHECK_EQ(g_popupBoundsQueries, 5);
+    X::HideOverflowFlyout();
+    CHECK_EQ(X::OverflowDropTargetAt(target), 0);
+    CHECK_EQ(g_popupBoundsQueries, 5); // no popup identity, no automation work
+    X::g_overflowScreenBounds = query;
+    g_dropWindowVisible = visible;
     DestroyWindow(t.owner);
 }
 
@@ -1743,7 +1818,10 @@ void Test_UnloadingLetsGoOfEveryXamlObjectTheModHolds() {
     CHECK(X::g_popupTimer != nullptr);
     CHECK(!X::g_loadedRevokers.empty());
 
+    auto closingFlyout = X::g_overflowFlyout;
+    CHECK(closingFlyout.Content() != nullptr);
     X::RemoveEverything();
+    CHECK(closingFlyout.Content() == nullptr);
     CHECK(X::g_embeddedTrays.empty());
     CHECK_EQ(X::g_embeddedTrays.capacity(), 0u);
     CHECK(X::g_faceTemplate == nullptr);
@@ -2333,6 +2411,7 @@ void Test_ThemeFeedbackUsesTheElementTheme() {
 }
 
 int main() {
+    setvbuf(stdout, nullptr, _IONBF, 0);
     printf("split-tray XAML tests (a hosted island, the mod's section 10)\n\n");
     winrt::init_apartment(winrt::apartment_type::single_threaded);
     if (!OpenIsland()) {
@@ -2341,6 +2420,7 @@ int main() {
     }
 
     TestRunner runner;
+    runner.Run("overflow hover uses one screen origin and live layout", Test_OverflowHoverUsesOneScreenOriginAndLiveLayout);
     runner.Run("cancelled ghost cannot transfer after Escape is released",Test_ACancelledGhostCannotTransferWhenEscapeHasBeenReleased);
     runner.Run("insertion line tracks reorder without changing cells",Test_InsertionLineTracksReorderWithoutChangingCells);
 

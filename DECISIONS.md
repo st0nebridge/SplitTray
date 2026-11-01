@@ -127,7 +127,11 @@ active decision.
 
 | 110 | 2026-11-01 | **Redeploy settings cross elevation as JSON data and checkout paths as parameters; generated installer code never interpolates either.** Fixes the demonstrated setting-expression injection, and child failure stops before any Explorer restart. | Active |
 
-| 111 | 2026-11-01 | **Explicit Show or Move onto a tray bar reveals and promotes the icon within the existing count/width budget; dropping onto its chevron or popup explicitly hides it.** Overflow origin travels with the existing value-only gesture queue so a same-tray return is valid, while ordinary same-bar reordering stays unchanged. | Active |
+| 111 | 2026-11-01 | **Explicit Show or Move onto a tray bar reveals and promotes the icon within the existing count/width budget; dropping onto its chevron or popup explicitly hides it.** Overflow origin travels with the existing value-only gesture queue so a same-tray return is valid, while ordinary same-bar reordering stays unchanged. | Promotion scope superseded by 115 |
 
 | 112 | 2026-11-01 | **Global shortcuts are off by default and opt in through Settings using Ctrl+Shift+F11/F12; async input polls use logical mouse buttons.** Supersedes decision 100's unconditional Ctrl+Alt shortcuts after catalog review demonstrated conflicts and swapped-button failures. | Active |
 | 113 | 2026-11-01 | **Private native drag hooks are optional independently of the existing IconView constructor hook.** Missing symbols disable only their optional behavior and are logged once at resolution. | Active |
+
+| 114 | 2026-11-01 | **Only strong WinRT resources suppress global destruction; weak references and plain drag state use normal destruction.** Clarifies 94 per catalog guidance: the insertion visual is a separate nullable global cleared on the taskbar thread; overflow content is detached before its flyout is released. | Active |
+
+| 115 | 2026-11-01 | **Ordinary tray moves preserve remembered icon order; only explicit Show and overflow-to-bar drags promote.** Supersedes the unconditional move promotion in 111 after the user reported round trips resetting the icon to the far left. Chevron/popup drops still hide and normal moves clear explicit hiding. | Active |

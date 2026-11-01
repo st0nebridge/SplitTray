@@ -3920,3 +3920,59 @@ User confirmed on installed 1.4.7: both overflow transfer directions and Show on
 - verification: tools/coverage.ps1 passed 1599 regression, 504 integration and 491 hosted-XAML checks. Regions85.73%, branches73.86%, functions90.59%, lines87.26%; all configured gates passed. Official upstream source validator: zero warnings. Initial full build passed; final source is to be built again from the release export.
 
 Floating capture now owns release detection; its visual timer no longer discards a click before WM_LBUTTONUP. Swapped-button coverage also drives the full native press/transfer/cancellation lifecycle.
+
+### 1.4.7 release candidate validation
+
+The clean archive export build passed1599 regression checks at O0/O2,504 integration checks and491 XAML checks. Strict public tree/new commit/tag and material scans returned no findings; negative control rejected the development tree. The live installation attempt was canceled by Windows before any deployment changes. Publication remains pending; see UNFINISHED.md for the exact candidate and continuation.
+
+## 1.4.7 published and catalog update submitted
+
+The installation retry succeeded as local@split-tray_1.4.7_885989.dll, DLL SHA25674C1A1470971304A9B48E70E37F0F38BE66C93C345F7BC3ABF0AF79DB82F2575. Explorer11016 stayed running and responsive;26/26 settings/state entries were preserved, catalog disabled, dev enabled; CPU265.625ms over10seconds.
+
+Public main and annotated v1.4.7 point to6b4cd05fbcb04dc63816f44f24603ef92617da45, built from development ee61850. Published2026-11-01T20:08:19Z: https://github.com/st0nebridge/SplitTray/releases/tag/v1.4.7. Source/checksum assets were downloaded and verified before and after publication. Export build1599/O0+O2,504integration,491XAML checks green; all coverage gates passed; strict release scans clean.
+
+PR6830 now contains exact released source at55e4d273178fa8dd9f67ff915efb5f77a8027f56. Updated title/body and replied to all three required findings, requested /ai-review: https://github.com/ramensoftware/windhawk-mods/pull/6830#issuecomment-6563226891. CI and the new review are pending. Do not use /ready-for-reviewer until the review is inspected and verified findings addressed; maintainer merge/catalog publication remain external.
+
+Supersedes the earlier pending-installation/publication status. Optional broad formatting, shared-order refactoring, native lookup/sort optimization remain deferred; ARM64 hardware and physical touch/pen remain untested.
+
+Catalog follow-up: all five GitHub validation/compatibility checks passed on 55e4d27 (Windhawk1.6.1,1.7.3,2.0.0-alpha.7). Label waiting-for-ai-review confirms the new review request was accepted. Human handoff remains pending inspection of that result.
+
+
+## CU-20261101-020 - Follow-up catalog review cleanup
+
+- type: fix
+- impact: low
+- affected_modules: src/split-tray.wh.cpp; README.md
+- description: Detach overflow content before releasing the flyout during unload. Separate the strong insertion visual from plain drag state; weak references no longer suppress destruction. Reuse the owned Arrange window handle for Tab navigation and restore the geometry comment. Document the intentional reveal-and-promote semantics of menu and Arrange moves, including sequential arrival order (decision 111).
+- related_tests: Test_UnloadingLetsGoOfEveryXamlObjectTheModHolds; Test_InsertionLineTracksReorderWithoutChangingCells; existing Arrange keyboard tests; tests/regression/test_check_catalog.py
+- verification: Red run: 493 checks, one failed assertion proving retained closing-flyout content survives RemoveEverything. Final tools/coverage.ps1 passed: regression1599, integration504, hosted-XAML512, all zero failures. Regions85.98%, branches74.06%, functions90.63%, lines87.35%; all gates passed. Existing LLVM mixed-suite warning: seven function mismatches. No new mutation score.
+
+Popup hover now queries the visible flyout presenter once through UI Automation, then transforms the remaining live button rectangles with the popup XAML root scale. No geometry is cached between ticks; dismissal and layout changes remain authoritative. Regression check: Test_OverflowHoverUsesOneScreenOriginAndLiveLayout, covering both cells, RTL, negative screen coordinates, outside/viewport rejection and no queries after dismissal.
+
+The popup test exercises the real presenter automation peer and live hit target, plus controlled one-query-per-hover, RTL, negative coordinates, viewport clipping and dismissal checks. The button face is intentionally not a pointer hit target; its Border owns input. The hidden test host exposes zero individual-button UIA rectangles, so the live test maps the cell center from the visible presenter instead.
+
+Structure scanner:91.2/100; Python testability23.1% fails its60% check; C++ structure is not measured. No full structural-compliance claim.
+
+Final tools/build.ps1 -SkipTests: Build OK, real Windhawk compile, catalog/settings/symbol/source checks and all five lifecycle exports passed. Earlier full build also passed1599 regression checks at O0/O2 and504 integration checks; the final hosted-XAML result is512/0 under coverage. The DLL is built locally, not installed or published.
+
+
+## CU-20261101-021 - Preserve order across tray transfers
+
+- type: fix
+- impact: low
+- affected_modules: src/split-tray.wh.cpp; README.md
+- description: Ordinary tray-to-tray moves preserve saved order instead of unconditionally promoting to the far left. Explicit Show and overflow-to-bar drags retain promotion so capacity-hidden icons can be revealed. Decision 115 supersedes the move-promotion portion of 111.
+- related_tests: Test_TrayMovesPreserveRememberedOrder; Test_OverflowDropsHideAndRevealWithoutLeakingTheChoice
+- verification: Red regression run: 1611 checks, four failures proving moves overwrite remembered order. Full tools/build.ps1 passed: 1611 regression checks at O0/O2, 504 integration, 512 hosted-XAML, all zero failures; DLL Build OK. tools/coverage.ps1 passed all gates: regions86.08%, branches74.15%, functions90.63%, lines87.47% (existing seven mixed-suite function mismatch warning). Installed local@split-tray_1.4.7_967769.dll; exact DLL hash verified, 27/27 settings/state values preserved, Explorer11016 stayed responsive without restart.
+
+
+## CU-20261101-022 - Prepare Split Tray 1.4.8
+
+- type: doc
+- impact: none
+- affected_modules: src/split-tray.wh.cpp; package.json
+- description: Version 1.4.8 packages preserved tray-move order, overflow hit-testing and unload cleanup, and catalog review polish.
+- related_tests: Test_TrayMovesPreserveRememberedOrder; Test_OverflowHoverUsesOneScreenOriginAndLiveLayout; Test_UnloadingLetsGoOfEveryXamlObjectTheModHolds
+- verification: Release-export validation pending.
+
+Release preparation also removes an internal change identifier from the public status document; the full record remains in CHANGES.md.

@@ -5170,6 +5170,41 @@ void Test_TrayDropsValidateSourceAndDestination() {
     DestroyWindow(owner);
 }
 
+void Test_TrayMovesPreserveRememberedOrder() {
+    Settings settings=DefaultSettings(); settings.defaultTray=Destination::Secondary;
+    settings.extraTrays={{0,Corner::BottomLeft}};
+    ResetStore(settings,true);
+    HWND owner=MakeOwnerWindow(); bool forward=true;
+    Feed(MakePayload(NIM_ADD,WireHandle(owner),7,NIF_MESSAGE|NIF_TIP,L"order",L"C:\\test\\order.exe"),&forward);
+    const auto serial=g_icons.front().serial;
+    const std::vector<std::wstring> order={L"before.exe#1",L"order.exe#7",L"after.exe#2"};
+    SetIconOrder(order);
+    auto oldTarget=std::exchange(g_dropTargetAt,+[](POINT p){return int(p.x);});
+    auto oldOverflow=std::exchange(g_overflowDropTargetAt,+[](POINT){return 0;});
+    CHECK(DropIconAt(serial,2,{3,0}));
+    CHECK(IconOrderSnapshot()==order);
+    CHECK(DropIconAt(serial,3,{2,0}));
+    CHECK(IconOrderSnapshot()==order);
+    CHECK(DropIconAt(serial,2,{1,0}));
+    SettleWithExplorer();
+    CHECK(DropIconAt(serial,1,{2,0}));
+    CHECK(IconOrderSnapshot()==order);
+    // Menus and Arrange use this same move API; neither should reset order.
+    MoveIconToTray(L"order.exe#7",Destination::Tray(3));
+    MoveIconToTray(L"order.exe#7",Destination::Secondary);
+    CHECK(IconOrderSnapshot()==order);
+    // Dragging OUT of overflow still reveals and promotes within the budget.
+    SetIconHidden(L"order.exe#7",true);
+    CHECK(DropIconAt(serial,2,{3,0},true));
+    CHECK(!IsIconHidden(L"order.exe#7"));
+    CHECK(IconOrderSnapshot().front()==L"order.exe#7");
+    SetIconOrder(order);
+    ShowIconOnTray(L"order.exe#7");
+    CHECK(IconOrderSnapshot().front()==L"order.exe#7");
+    g_dropTargetAt=oldTarget; g_overflowDropTargetAt=oldOverflow;
+    DestroyWindow(owner);
+}
+
 void Test_OverflowDropsHideAndRevealWithoutLeakingTheChoice() {
     Settings settings=DefaultSettings(); settings.defaultTray=Destination::Secondary;
     settings.extraTrays={{0,Corner::BottomLeft}};
@@ -5643,6 +5678,7 @@ int main() {
     printf("split-tray regression tests\n\n");
 
     TestRunner runner;
+    runner.Run("tray moves preserve remembered order",Test_TrayMovesPreserveRememberedOrder);
     runner.Run("floating timer preserves captured release", Test_FloatingTimerDoesNotConsumeCapturedRelease);
     runner.Run("swapped native full lifecycle", Test_ReviewSwappedNativeLifecycle);
     runner.Run("missing optional symbols preserve constructor", Test_ReviewMissingOptionalSymbolsKeepConstructor);
